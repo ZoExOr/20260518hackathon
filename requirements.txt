@@ -1,2 +1,7 @@
-httpx>=0.28
-litellm>=1.70
+requests>=2.31
+# optional, for offline tuning:
+scikit-optimize>=0.9      # Bayesian optimisation (harness falls back to random)
+# optional, for the LLM regime supervisor:
+litellm>=1.40             # any provider via AGENT_MODEL
+# dev:
+pytest>=7.0
