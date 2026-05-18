@@ -100,6 +100,13 @@ class SupplyController:
         inflates the quantity, shelf life caps it (waste guard)."""
         candidates = supplier_for(obs, ing)
         best = None
+        # The Beta prior in types.py is (5, 1) → initial reliability 0.83.
+        # Without an evidence guard, EVERY first-order would still be
+        # inflated ~1.20× across the board, which compounds with the
+        # target_days + safety_days = 9 to overbuy perishables. Require
+        # at least a few real deliveries before letting reliability move
+        # the order quantity.
+        EVIDENCE_THRESHOLD = 3.0  # observed orders past the prior
         for s in candidates:
             eta = earliest_delivery_day(
                 obs.day, int(s.get("lead_time_days", 1)),

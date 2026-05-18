@@ -25,7 +25,9 @@ from .regime import RegimeSupervisor, HeuristicRegime
 
 class Agent:
     def __init__(self, params: Params | None = None,
-                 regime: RegimeSupervisor | None = None):
+                 regime: RegimeSupervisor | None = None,
+                 use_advisors: bool = False):
+        self.use_advisors = use_advisors
         self.params = params or Params()
         self.belief_est = BeliefEstimator()
         self.regime = regime or HeuristicRegime()

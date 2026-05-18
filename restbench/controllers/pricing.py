@@ -17,6 +17,7 @@ a lower-priority "drop dish" proposal. See composer.py.
 from __future__ import annotations
 
 from .base import Controller
+from .base import Controller
 from ..types import Observation, BeliefState, ProposedAction, Action
 from ..params import Params
 
@@ -25,7 +26,11 @@ class PricingController:
     name = "pricing"
 
     def propose(self, obs: Observation, belief: BeliefState,
-                params: Params) -> list[ProposedAction]:
+                params: Params,
+                posture: str = "hold") -> list[ProposedAction]:
+        """`posture` comes from DemandAdvisor (LLM-picked) or the regime
+        fallback. Maps to a recipe of marketing / happy_hour / special
+        without ever asking the LLM for a number."""
         out: list[ProposedAction] = []
 
         # 1) Menu: keep all dishes whose ingredients we could plausibly stock.
@@ -38,7 +43,12 @@ class PricingController:
                 priority=20, rationale="maximise variety"))
 
         # 2) Prices: apply the global multiplier within the 0.8-1.2 band.
+        #    Posture "push" allows mult up to +5%; "discount" allows -5%.
         mult = params.base_price_mult
+        if posture == "push":
+            mult = min(1.05, mult * 1.03)
+        elif posture == "discount":
+            mult = max(0.95, mult * 0.97)
         if abs(mult - 1.0) > 1e-3:
             for m in obs.menu_book:
                 if not m.get("is_active"):
@@ -49,7 +59,7 @@ class PricingController:
                     out.append(ProposedAction(
                         Action("set_price", {"dish": m["name"], "price": price}),
                         priority=20,
-                        rationale=f"global x{mult:.2f}"))
+                        rationale=f"posture={posture} x{mult:.2f}"))
 
         # 3) Marketing / happy hour / special — reactive to weak demand.
         trend = obs.customer_trend
@@ -63,7 +73,7 @@ class PricingController:
         if weak and params.happy_hour_on_weak_days:
             out.append(ProposedAction(
                 Action("run_happy_hour", {}), priority=10,
-                rationale="weak demand -> happy hour"))
+                rationale="discount posture -> happy hour"))
 
         # Daily special: cheap satisfaction bonus; rotate a popular dish.
         sold = obs.service_summary.get("dishes_sold", {}) or {}

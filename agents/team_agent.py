@@ -27,7 +27,11 @@ def main() -> None:
     ap.add_argument("--scenario", default="baseline")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--tune", action="store_true")
-    ap.add_argument("--llm", action="store_true")
+    ap.add_argument("--llm", action="store_true",
+                    help="LLM regime supervisor (every k days)")
+    ap.add_argument("--advisors", action="store_true",
+                    help="Enable per-controller LLM advisors "
+                         "(demand posture, critic, research narrative)")
     ap.add_argument("--no-replay", action="store_true")
     args = ap.parse_args()
 
@@ -39,7 +43,8 @@ def main() -> None:
     replay = None if args.no_replay else ReplayStore()
     try:
         play_game(TEAM, args.scenario, args.seed, params=Params(),
-                  regime=regime, replay=replay, verbose=True)
+                  regime=regime, replay=replay, verbose=True,
+                  use_advisors=args.advisors)
     finally:
         if replay:
             replay.close()
