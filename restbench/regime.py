@@ -15,6 +15,7 @@ from typing import Protocol
 
 from .types import Observation, BeliefState, Mode
 from .params import Params
+from .llm_silence import silence_litellm
 
 
 class RegimeSupervisor(Protocol):
@@ -70,6 +71,7 @@ class LLMRegime:
         self._fallback = HeuristicRegime()
         self._last_day = -999
         self._last = (Mode.NORMAL, {})
+        silence_litellm()
 
     def decide(self, obs: Observation, belief: BeliefState,
                params: Params) -> tuple[Mode, dict]:
@@ -102,5 +104,7 @@ class LLMRegime:
             mode = Mode(data.get("mode", "normal"))
             self._last = (mode, dict(data.get("overrides", {})))
         except Exception:
+            if os.getenv("RESTBENCH_REQUIRE_LLM") == "1":
+                raise
             self._last = self._fallback.decide(obs, belief, params)
         return self._last

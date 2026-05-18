@@ -24,6 +24,32 @@ from ..params import Params
 class PricingController:
     name = "pricing"
 
+    def _serviceable_dishes(
+        self,
+        obs: Observation,
+        usable: dict[str, float],
+        belief: BeliefState,
+        *,
+        min_cover_days: float,
+    ) -> list[str]:
+        out: list[str] = []
+        for dish in [m["name"] for m in obs.menu_book]:
+            rec = obs.recipe(dish)
+            if not rec:
+                continue
+            ok = True
+            for item in rec.get("ingredients", []):
+                ing = item["ingredient"]
+                per_dish = float(item["quantity_kg"])
+                usage = belief.ingredient_daily_usage.get(ing, 0.0)
+                required = max(per_dish, usage * min_cover_days)
+                if usable.get(ing, 0.0) < required:
+                    ok = False
+                    break
+            if ok:
+                out.append(dish)
+        return out
+
     def propose(self, obs: Observation, belief: BeliefState,
                 params: Params) -> list[ProposedAction]:
         out: list[ProposedAction] = []
@@ -32,16 +58,12 @@ class PricingController:
         # 1) Menu: prefer the widest *currently serviceable* menu.
         all_dishes = [m["name"] for m in obs.menu_book]
         usable = {inv["ingredient"]: usable_inventory_kg(inv) for inv in obs.inventory}
-        safe = []
-        for dish in all_dishes:
-            rec = obs.recipe(dish)
-            if not rec:
-                continue
-            if all(usable.get(i["ingredient"], 0.0) >= i["quantity_kg"]
-                   for i in rec.get("ingredients", [])):
-                safe.append(dish)
+        safe = self._serviceable_dishes(
+            obs, usable, belief,
+            min_cover_days=0.75 if emergency else 0.35,
+        )
         desired = all_dishes if len(all_dishes) >= 5 else obs.active_menu
-        if emergency and len(safe) >= 5:
+        if len(safe) >= 5 and (emergency or len(safe) < len(all_dishes)):
             desired = safe
         if set(desired) != set(obs.active_menu) and len(desired) >= 5:
             out.append(ProposedAction(
@@ -67,15 +89,18 @@ class PricingController:
         # 3) Marketing / happy hour / special — reactive to weak demand.
         trend = obs.customer_trend
         weak = trend == "Declining" or belief.reputation_trajectory == "Falling"
+        capacity_reduced = belief.memory.get("capacity_reduced_until", 0) >= obs.day
         spend = 0.0 if emergency else (
             params.marketing_slump if weak else params.marketing_default
         )
+        if capacity_reduced:
+            spend = 0.0
         spend = max(0.0, min(500.0, spend))
         out.append(ProposedAction(
             Action("set_marketing_spend", {"amount": spend}),
             priority=10, rationale=f"trend={trend}, emergency={emergency}"))
 
-        if weak and params.happy_hour_on_weak_days and not emergency:
+        if weak and params.happy_hour_on_weak_days and not emergency and not capacity_reduced:
             out.append(ProposedAction(
                 Action("run_happy_hour", {}), priority=10,
                 rationale="weak demand -> happy hour"))

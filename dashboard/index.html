@@ -47,13 +47,18 @@
       align-items: center;
       flex-wrap: wrap;
     }
-    select, button {
+    select, button, .nav-link {
       background: var(--panel-2);
       color: var(--text);
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 10px 12px;
       font: inherit;
+    }
+    .nav-link {
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
     }
     .grid {
       display: grid;
@@ -156,6 +161,7 @@
         <div class="muted">Realtime view over replay logs. Auto-refresh every 3 seconds.</div>
       </div>
       <div class="controls">
+        <a class="nav-link" href="/research-readme">Research README</a>
         <label class="muted small">Replay</label>
         <select id="runSelect"></select>
         <button id="refreshBtn">Refresh</button>

@@ -70,7 +70,7 @@ def load_strategy(module_path: str, *, use_llm: bool = False):
     return mod.strategy
 
 
-MAX_PARALLEL = 10
+MAX_PARALLEL = 5
 
 
 def _run_one(
@@ -257,8 +257,8 @@ def main():
     parser.add_argument(
         "--parallel", "-p",
         type=int,
-        default=MAX_PARALLEL,
-        help=f"Max parallel games (default: {MAX_PARALLEL})",
+        default=None,
+        help=f"Max parallel games (default: 1 with --llm, otherwise {MAX_PARALLEL})",
     )
     parser.add_argument(
         "--llm",
@@ -275,7 +275,7 @@ def main():
         scenarios = fetch_scenarios(args.url)
 
     seeds = [int(s) for s in args.seeds.split(",")]
-    default_team_name = "italian" if args.agent == "agents.team_agent" else args.agent.split(".")[-1]
+    default_team_name = "pppp" if args.agent == "agents.team_agent" else args.agent.split(".")[-1]
     team_name = args.team_name or os.getenv("RESTBENCH_TEAM") or default_team_name
 
     print(f"Agent:     {args.agent}")
@@ -285,6 +285,8 @@ def main():
     print(f"Server:    {args.url}")
     if args.llm:
         print("LLM:       enabled")
+    parallel = args.parallel if args.parallel is not None else (1 if args.llm else MAX_PARALLEL)
+    print(f"Parallel:  {parallel}")
 
     data = evaluate(
         strategy,
@@ -293,7 +295,7 @@ def main():
         base_url=args.url,
         team_name=team_name,
         verbose=not args.quiet,
-        parallel=args.parallel,
+        parallel=parallel,
     )
 
     print_report(data, team_name, seeds)

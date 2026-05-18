@@ -22,15 +22,31 @@ from restbench.agent import Agent
 from restbench.types import Observation
 from restbench.tuning.harness import EvalConfig, optimise
 
-TEAM = os.environ.get("RESTBENCH_TEAM", "italian")
+TEAM = os.environ.get("RESTBENCH_TEAM", "pppp")
 _STRATEGY_STATE = threading.local()
 _STRATEGY_USE_LLM = False
+
+
+def _prepare_llm_env() -> None:
+    """Make LLM mode explicit and fail fast if no provider key is configured."""
+    if os.getenv("OPENAI_API_KEY"):
+        os.environ.setdefault("AGENT_MODEL", "openai/gpt-4.1-mini")
+    elif os.getenv("ANTHROPIC_API_KEY"):
+        os.environ.setdefault("AGENT_MODEL", "anthropic/claude-haiku-4-5")
+    else:
+        raise RuntimeError(
+            "LLM mode requires an API key. In PowerShell run: "
+            "$env:OPENAI_API_KEY='sk-...' or $env:ANTHROPIC_API_KEY='...'"
+        )
+    os.environ["RESTBENCH_REQUIRE_LLM"] = "1"
 
 
 def configure_strategy(*, use_llm: bool = False) -> None:
     """Configure the evaluate-compatible strategy entrypoint."""
     global _STRATEGY_USE_LLM
     _STRATEGY_USE_LLM = use_llm
+    if use_llm:
+        _prepare_llm_env()
     if hasattr(_STRATEGY_STATE, "agent"):
         delattr(_STRATEGY_STATE, "agent")
 
@@ -38,6 +54,8 @@ def configure_strategy(*, use_llm: bool = False) -> None:
 def _strategy_agent(day: int) -> Agent:
     if day == 1 or not hasattr(_STRATEGY_STATE, "agent"):
         use_llm = _STRATEGY_USE_LLM or os.getenv("RESTBENCH_USE_LLM") == "1"
+        if use_llm:
+            _prepare_llm_env()
         regime = LLMRegime() if use_llm else HeuristicRegime()
         _STRATEGY_STATE.agent = Agent(params=Params(), regime=regime)
     return _STRATEGY_STATE.agent
@@ -67,6 +85,8 @@ def main() -> None:
         optimise(EvalConfig(team_name=TEAM))
         return
 
+    if args.llm:
+        _prepare_llm_env()
     regime = LLMRegime() if args.llm else HeuristicRegime()
     replay = None if args.no_replay else ReplayStore()
     try:

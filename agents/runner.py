@@ -24,6 +24,41 @@ import httpx
 Strategy = Callable[[dict, int], list[dict]]
 
 DEFAULT_URL = os.getenv("RESTBENCH_URL", "http://52.48.183.209:8001")
+RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+
+def _request_json(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    *,
+    max_attempts: int = 7,
+    **kwargs,
+) -> dict:
+    last_error: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            response = client.request(method, url, **kwargs)
+            if response.status_code not in RETRY_STATUSES:
+                response.raise_for_status()
+                return response.json()
+
+            retry_after = response.headers.get("Retry-After")
+            if retry_after:
+                delay = float(retry_after)
+            else:
+                delay = min(60.0, 2.0 * (2 ** attempt))
+            time.sleep(delay)
+            continue
+        except httpx.HTTPError as exc:
+            last_error = exc
+            if attempt == max_attempts - 1:
+                raise
+            time.sleep(min(30.0, 1.5 * (attempt + 1)))
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"{method} {url} failed after {max_attempts} attempts")
 
 
 def run_game(
@@ -37,13 +72,11 @@ def run_game(
 ) -> dict:
     transport = httpx.HTTPTransport(retries=3)
     with httpx.Client(base_url=base_url, timeout=60.0, transport=transport) as client:
-        r = client.post("/games", json={
+        data = _request_json(client, "POST", "/games", json={
             "team_name": team_name,
             "scenario": scenario,
             "seed": seed,
         })
-        r.raise_for_status()
-        data = r.json()
         game_id = data["game_id"]
         observation = data["observation"]
         day = data["day"]
@@ -57,9 +90,7 @@ def run_game(
             accepted = 0
             rejected = 0
             for tc in tool_calls:
-                r = client.post(f"/games/{game_id}/action", json=tc)
-                r.raise_for_status()
-                result = r.json()
+                result = _request_json(client, "POST", f"/games/{game_id}/action", json=tc)
                 if result["status"] == "accepted":
                     accepted += 1
                 else:
@@ -67,9 +98,7 @@ def run_game(
                     if verbose:
                         print(f"  Day {day}: REJECTED {tc['tool']}: {result['reason']}")
 
-            r = client.post(f"/games/{game_id}/end-turn")
-            r.raise_for_status()
-            turn_data = r.json()
+            turn_data = _request_json(client, "POST", f"/games/{game_id}/end-turn")
 
             observation = turn_data["observation"]
             day = turn_data["day"]
@@ -89,9 +118,7 @@ def run_game(
                     print(f"Game ended: {status}")
                 break
 
-        r = client.get(f"/games/{game_id}/score")
-        r.raise_for_status()
-        score_data = r.json()
+        score_data = _request_json(client, "GET", f"/games/{game_id}/score")
 
         if verbose:
             s = score_data['score']

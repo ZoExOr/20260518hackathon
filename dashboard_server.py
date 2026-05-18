@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 ROOT = Path(__file__).resolve().parent
 REPLAY_DIR = ROOT / "replays"
 HTML_PATH = ROOT / "dashboard" / "index.html"
+README_PATH = ROOT / "dashboard" / "research-readme.html"
 
 
 def _load_run(path: Path) -> dict:
@@ -171,6 +172,10 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self._send_html(HTML_PATH.read_text(encoding="utf-8"))
+            return
+
+        if parsed.path == "/research-readme":
+            self._send_html(README_PATH.read_text(encoding="utf-8"))
             return
 
         if parsed.path == "/api/runs":

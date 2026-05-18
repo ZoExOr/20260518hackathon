@@ -37,7 +37,7 @@ class Params:
     weekend_staff_bonus: int = 1
 
     # --- Pricing / promos --------------------------------------------------
-    base_price_mult: float = 1.0           # global price multiplier (0.8..1.2)
+    base_price_mult: float = 1.12          # global price multiplier (0.8..1.2)
     marketing_default: float = 0.0
     marketing_slump: float = 200.0         # marketing when trend is Declining
     happy_hour_on_weak_days: bool = True
