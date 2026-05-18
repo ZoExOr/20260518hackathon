@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RestBench Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel-2: #1f2937;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --green: #34d399;
+      --amber: #fbbf24;
+      --red: #f87171;
+      --blue: #60a5fa;
+      --border: #334155;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: linear-gradient(180deg, #020617 0%, #0f172a 100%);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 28px;
+    }
+    .muted { color: var(--muted); }
+    .controls {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    select, button {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: inherit;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+    .card {
+      background: rgba(17, 24, 39, 0.9);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 16px;
+      backdrop-filter: blur(8px);
+      min-height: 110px;
+    }
+    .label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
+    }
+    .value {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .sub {
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .chart-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+    .chart-card {
+      background: rgba(17, 24, 39, 0.9);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 16px;
+    }
+    .chart-title {
+      margin: 0 0 10px 0;
+      font-size: 16px;
+    }
+    svg {
+      width: 100%;
+      height: 220px;
+      display: block;
+      overflow: visible;
+    }
+    .table-card {
+      background: rgba(17, 24, 39, 0.9);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      text-align: left;
+      padding: 9px 8px;
+      border-bottom: 1px solid rgba(51, 65, 85, 0.7);
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 600; }
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      border: 1px solid var(--border);
+      margin-right: 6px;
+      margin-bottom: 4px;
+    }
+    .green { color: var(--green); }
+    .amber { color: var(--amber); }
+    .red { color: var(--red); }
+    .small { font-size: 12px; }
+    @media (max-width: 1100px) {
+      .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .chart-grid { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 760px) {
+      .grid, .chart-grid { grid-template-columns: 1fr; }
+      .topbar { flex-direction: column; align-items: stretch; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h1>RestBench Trend Dashboard</h1>
+        <div class="muted">Realtime view over replay logs. Auto-refresh every 3 seconds.</div>
+      </div>
+      <div class="controls">
+        <label class="muted small">Replay</label>
+        <select id="runSelect"></select>
+        <button id="refreshBtn">Refresh</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card"><div class="label">Scenario / Seed</div><div id="scenarioValue" class="value">-</div><div id="scenarioSub" class="sub">-</div></div>
+      <div class="card"><div class="label">Final Score</div><div id="scoreValue" class="value">-</div><div id="scoreSub" class="sub">-</div></div>
+      <div class="card"><div class="label">Last Cash</div><div id="cashValue" class="value">-</div><div id="cashSub" class="sub">-</div></div>
+      <div class="card"><div class="label">Reputation / Walkout</div><div id="repValue" class="value">-</div><div id="repSub" class="sub">-</div></div>
+      <div class="card"><div class="label">Coverage Risk</div><div id="riskValue" class="value">-</div><div id="riskSub" class="sub">-</div></div>
+      <div class="card"><div class="label">Ops Snapshot</div><div id="opsValue" class="value">-</div><div id="opsSub" class="sub">-</div></div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 class="chart-title">Cash Trend</h3>
+        <svg id="cashChart"></svg>
+      </div>
+      <div class="chart-card">
+        <h3 class="chart-title">Covers and Revenue</h3>
+        <svg id="coversChart"></svg>
+      </div>
+      <div class="chart-card">
+        <h3 class="chart-title">Wait and Walkout Pressure</h3>
+        <svg id="walkChart"></svg>
+      </div>
+      <div class="chart-card">
+        <h3 class="chart-title">Inventory Risk</h3>
+        <svg id="inventoryChart"></svg>
+      </div>
+      <div class="chart-card">
+        <h3 class="chart-title">Cost Stack</h3>
+        <svg id="costChart"></svg>
+      </div>
+      <div class="chart-card">
+        <h3 class="chart-title">Staff, Menu, Pending Qty</h3>
+        <svg id="opsChart"></svg>
+      </div>
+      <div class="chart-card">
+        <h3 class="chart-title">Alerts, Stockouts, Substitutions</h3>
+        <svg id="incidentChart"></svg>
+      </div>
+      <div class="chart-card">
+        <h3 class="chart-title">Weather, Reviews, Utilization</h3>
+        <svg id="qualityChart"></svg>
+      </div>
+    </div>
+
+    <div class="table-card">
+      <h3 class="chart-title">Per-Day Snapshot</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Day</th>
+            <th>Final Score</th>
+            <th>Cash</th>
+            <th>Covers</th>
+            <th>Revenue</th>
+            <th>Costs</th>
+            <th>Staff</th>
+            <th>Menu</th>
+            <th>Walkout</th>
+            <th>Wait</th>
+            <th>Pending</th>
+            <th>Zero Inv</th>
+            <th>Expiring Soon</th>
+            <th>Mode</th>
+            <th>Actions</th>
+            <th>Alerts / Stockouts</th>
+          </tr>
+        </thead>
+        <tbody id="dayTable"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const POLL_MS = 3000;
+    let selectedRun = null;
+    let lastRunsSignature = "";
+
+    async function fetchJson(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    }
+
+    function fmtNum(v) {
+      return Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
+    }
+
+    function walkScore(band) {
+      return { None: 0, Few: 1, Some: 2, Many: 3 }[band] ?? 0;
+    }
+
+    function weatherScore(weather) {
+      return { sunny: 3, cloudy: 2, rainy: 1, stormy: 0 }[(weather || "").toLowerCase()] ?? 0;
+    }
+
+    function spark(svgId, seriesList, options = {}) {
+      const svg = document.getElementById(svgId);
+      const width = svg.clientWidth || 600;
+      const height = svg.clientHeight || 220;
+      const pad = 28;
+      const all = seriesList.flatMap(s => s.values).filter(v => Number.isFinite(v));
+      const min = options.min ?? Math.min(...all, 0);
+      const max = options.max ?? Math.max(...all, 1);
+      const range = Math.max(1e-6, max - min);
+      const n = Math.max(...seriesList.map(s => s.values.length), 1);
+
+      const x = i => pad + (i * (width - pad * 2)) / Math.max(1, n - 1);
+      const y = v => height - pad - ((v - min) * (height - pad * 2)) / range;
+
+      let html = "";
+      html += `<line x1="${pad}" y1="${height-pad}" x2="${width-pad}" y2="${height-pad}" stroke="#475569" stroke-width="1"/>`;
+      html += `<line x1="${pad}" y1="${pad}" x2="${pad}" y2="${height-pad}" stroke="#475569" stroke-width="1"/>`;
+      html += `<text x="${pad}" y="${pad-8}" fill="#94a3b8" font-size="11">${fmtNum(max)}</text>`;
+      html += `<text x="${pad}" y="${height-8}" fill="#94a3b8" font-size="11">${fmtNum(min)}</text>`;
+
+      for (const series of seriesList) {
+        const pts = series.values.map((v, i) => `${x(i)},${y(v)}`).join(" ");
+        html += `<polyline fill="none" stroke="${series.color}" stroke-width="3" points="${pts}" />`;
+        series.values.forEach((v, i) => {
+          html += `<circle cx="${x(i)}" cy="${y(v)}" r="2.5" fill="${series.color}" />`;
+        });
+      }
+      svg.innerHTML = html;
+    }
+
+    function renderSummary(rows, summary) {
+      const last = rows[rows.length - 1] || {};
+      document.getElementById("scenarioValue").textContent = `${summary.scenario || "-"} / ${summary.seed ?? "-"}`;
+      document.getElementById("scenarioSub").textContent = `Last day: ${summary.last_day ?? "-"}`;
+
+      document.getElementById("scoreValue").textContent =
+        summary.final_score == null ? "-" : fmtNum(summary.final_score);
+      const parts = [
+        summary.net_profit == null ? null : `profit ${fmtNum(summary.net_profit)}`,
+        summary.walkout_penalty == null ? null : `walk ${fmtNum(summary.walkout_penalty)}`,
+        summary.reputation_penalty == null ? null : `rep ${fmtNum(summary.reputation_penalty)}`,
+        summary.waste_penalty == null ? null : `waste ${fmtNum(summary.waste_penalty)}`
+      ].filter(Boolean);
+      document.getElementById("scoreSub").textContent = parts.length ? parts.join(" | ") : "Run this without --no-replay to capture final score";
+
+      document.getElementById("cashValue").textContent = fmtNum(summary.cash || 0);
+      const startCash = rows[0]?.cash || 0;
+      const deltaCash = (summary.cash || 0) - startCash;
+      document.getElementById("cashSub").textContent = `Delta vs start: ${deltaCash >= 0 ? "+" : ""}${fmtNum(deltaCash)}`;
+
+      document.getElementById("repValue").textContent = `${summary.reputation_band || "-"} / ${summary.walkout_band || "-"}`;
+      document.getElementById("repSub").textContent = `Trend: ${last.customer_trend || "-"}`;
+
+      document.getElementById("riskValue").textContent = `${last.zero_inventory_ingredients || 0} zero / ${last.expiring_soon_ingredients || 0} expiring`;
+      document.getElementById("riskSub").textContent = `Pending orders: ${summary.pending_order_count || 0}`;
+
+      document.getElementById("opsValue").textContent =
+        `S${summary.staff_level || 0} / M${summary.active_menu_count || 0}`;
+      document.getElementById("opsSub").textContent =
+        `pending ${fmtNum(summary.pending_order_qty || 0)}kg | cost ${fmtNum(summary.total_costs || 0)} | mode ${summary.mode || "-"}`;
+    }
+
+    function renderCharts(rows) {
+      spark("cashChart", [
+        { color: "#60a5fa", values: rows.map(r => r.cash || 0) }
+      ]);
+      spark("coversChart", [
+        { color: "#34d399", values: rows.map(r => r.covers || 0) },
+        { color: "#fbbf24", values: rows.map(r => r.revenue || 0) }
+      ]);
+      spark("walkChart", [
+        { color: "#f87171", values: rows.map(r => walkScore(r.walkout_band)) },
+        { color: "#a78bfa", values: rows.map(r => r.peak_wait_minutes || 0) }
+      ]);
+      spark("inventoryChart", [
+        { color: "#f87171", values: rows.map(r => r.zero_inventory_ingredients || 0) },
+        { color: "#fbbf24", values: rows.map(r => r.expiring_soon_ingredients || 0) },
+        { color: "#60a5fa", values: rows.map(r => r.pending_order_count || 0) }
+      ]);
+      spark("costChart", [
+        { color: "#34d399", values: rows.map(r => r.revenue || 0) },
+        { color: "#f87171", values: rows.map(r => r.total_costs || 0) },
+        { color: "#a78bfa", values: rows.map(r => r.staff_cost || 0) },
+        { color: "#fbbf24", values: rows.map(r => r.marketing_cost || 0) }
+      ]);
+      spark("opsChart", [
+        { color: "#60a5fa", values: rows.map(r => r.staff_level || 0) },
+        { color: "#34d399", values: rows.map(r => r.active_menu_count || 0) },
+        { color: "#fbbf24", values: rows.map(r => r.pending_order_qty || 0) }
+      ]);
+      spark("incidentChart", [
+        { color: "#f87171", values: rows.map(r => r.alert_count || 0) },
+        { color: "#a78bfa", values: rows.map(r => (r.stockouts || []).length) },
+        { color: "#34d399", values: rows.map(r => r.substitution_count || 0) }
+      ]);
+      spark("qualityChart", [
+        { color: "#60a5fa", values: rows.map(r => weatherScore(r.weather_today)) },
+        { color: "#34d399", values: rows.map(r => r.avg_review || 0) },
+        { color: "#fbbf24", values: rows.map(r => r.table_utilization_peak || 0) }
+      ]);
+    }
+
+    function renderTable(rows, summary) {
+      const tbody = document.getElementById("dayTable");
+      const finalScore = summary?.final_score;
+      tbody.innerHTML = rows.map(r => {
+        const actions = Object.entries(r.action_counts || {})
+          .map(([k, v]) => `${k}:${v}`)
+          .join(", ");
+        const alertParts = [...(r.alerts || []), ...(r.stockouts || []).map(s => `stockout:${s}`)];
+        return `
+          <tr>
+            <td>${r.day ?? "-"}</td>
+            <td>${finalScore == null ? "-" : fmtNum(finalScore)}</td>
+            <td>${fmtNum(r.cash)}</td>
+            <td>${fmtNum(r.covers)}</td>
+            <td>${fmtNum(r.revenue)}</td>
+            <td>${fmtNum(r.total_costs)}</td>
+            <td>${r.staff_level || 0}</td>
+            <td>${r.active_menu_count || 0}</td>
+            <td>${r.walkout_band || "-"}</td>
+            <td>${(r.avg_wait_minutes || 0).toFixed(1)} / ${(r.peak_wait_minutes || 0).toFixed(1)}</td>
+            <td>${r.pending_order_count || 0} / ${fmtNum(r.pending_order_qty || 0)}kg</td>
+            <td>${r.zero_inventory_ingredients || 0}</td>
+            <td>${r.expiring_soon_ingredients || 0}</td>
+            <td>${r.mode || "-"}</td>
+            <td>${actions || "-"}</td>
+            <td>${alertParts.join(" | ") || "-"}</td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    async function loadRuns() {
+      const data = await fetchJson("/api/runs");
+      const runs = data.runs || [];
+      const sig = runs.map(r => r.name).join("|");
+      const select = document.getElementById("runSelect");
+      if (sig !== lastRunsSignature) {
+        lastRunsSignature = sig;
+        select.innerHTML = runs.map(r => `<option value="${r.name}">${r.name}</option>`).join("");
+        if (!selectedRun && runs[0]) selectedRun = runs[0].name;
+        if (selectedRun) select.value = selectedRun;
+      }
+      if (!selectedRun && runs[0]) selectedRun = runs[0].name;
+    }
+
+    async function refresh() {
+      await loadRuns();
+      if (!selectedRun) return;
+      const data = await fetchJson(`/api/run?name=${encodeURIComponent(selectedRun)}`);
+      const rows = data.rows || [];
+      const summary = data.summary || {};
+      renderSummary(rows, summary);
+      renderCharts(rows);
+      renderTable(rows, summary);
+    }
+
+    document.getElementById("runSelect").addEventListener("change", (e) => {
+      selectedRun = e.target.value;
+      refresh();
+    });
+    document.getElementById("refreshBtn").addEventListener("click", refresh);
+
+    refresh();
+    setInterval(refresh, POLL_MS);
+  </script>
+</body>
+</html>

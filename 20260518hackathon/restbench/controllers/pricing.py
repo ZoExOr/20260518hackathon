@@ -1,0 +1,119 @@
+"""PricingController — menu, prices, marketing, happy hour, daily special.
+
+OWNER: demand workstream.
+
+Baseline keeps a wide menu (variety drives demand), a near-base global
+price multiplier, and uses marketing / happy hour / specials reactively
+when demand is weak. Price elasticity is real and asymmetric — the offline
+analysis (tuning/analyze.py) estimates it from replays; this controller just
+applies `params.base_price_mult` until that lands.
+
+Note the menu-conflict contract: BOTH this controller and supply care about
+the menu. Resolution rule = the composer keeps the WIDEST safe menu and
+drops only dishes whose ingredients are structurally unavailable. So this
+controller proposes the *desired* menu; supply may veto specific dishes via
+a lower-priority "drop dish" proposal. See composer.py.
+"""
+from __future__ import annotations
+
+from .base import (Controller, serviceability_risk, structural_stockout,
+                   usable_inventory_kg)
+from ..types import Observation, BeliefState, ProposedAction, Action
+from ..params import Params
+
+
+class PricingController:
+    name = "pricing"
+
+    def propose(self, obs: Observation, belief: BeliefState,
+                params: Params) -> list[ProposedAction]:
+        out: list[ProposedAction] = []
+        emergency = structural_stockout(obs)
+        risk = serviceability_risk(obs, belief, params)
+
+        # 1) Menu: prefer the widest *currently serviceable* menu.
+        all_dishes = [m["name"] for m in obs.menu_book]
+        usable = {inv["ingredient"]: usable_inventory_kg(inv) for inv in obs.inventory}
+        safe = []
+        for dish in all_dishes:
+            rec = obs.recipe(dish)
+            if not rec:
+                continue
+            if all(usable.get(i["ingredient"], 0.0) >= i["quantity_kg"]
+                   for i in rec.get("ingredients", [])):
+                safe.append(dish)
+        desired = all_dishes if len(all_dishes) >= 5 else obs.active_menu
+        if emergency and len(safe) >= 5:
+            desired = safe
+        if set(desired) != set(obs.active_menu) and len(desired) >= 5:
+            out.append(ProposedAction(
+                Action("set_menu", {"dishes": desired}),
+                priority=20,
+                rationale="structural stockout -> widest safe menu"
+                if emergency else "maximise variety"))
+
+        # 2) Prices: apply the global multiplier within the 0.8-1.2 band.
+        mult = params.base_price_mult
+        if risk.level == "high":
+            mult = max(mult, 1.05)
+        if abs(mult - 1.0) > 1e-3:
+            for m in obs.menu_book:
+                if not m.get("is_active"):
+                    continue
+                base = m["base_price"]
+                price = round(min(1.2, max(0.8, mult)) * base, 2)
+                if abs(price - m.get("current_price", base)) > 0.01:
+                    out.append(ProposedAction(
+                        Action("set_price", {"dish": m["name"], "price": price}),
+                        priority=20,
+                        rationale=f"global x{mult:.2f}"))
+
+        # 3) Marketing / happy hour / special — reactive to weak demand.
+        trend = obs.customer_trend
+        weak = trend == "Declining" or belief.reputation_trajectory == "Falling"
+        spend = 0.0 if emergency or risk.high_or_worse else (
+            params.marketing_slump if weak else params.marketing_default
+        )
+        spend = max(0.0, min(500.0, spend))
+        out.append(ProposedAction(
+            Action("set_marketing_spend", {"amount": spend}),
+            priority=10, rationale=f"trend={trend}, emergency={emergency}"))
+
+        if weak and params.happy_hour_on_weak_days and not emergency \
+                and not risk.high_or_worse:
+            out.append(ProposedAction(
+                Action("run_happy_hour", {}), priority=10,
+                rationale="weak demand -> happy hour"))
+
+        # Daily special: cheap satisfaction bonus; rotate a popular dish.
+        sold = obs.service_summary.get("dishes_sold", {}) or {}
+        if obs.active_menu and not emergency:
+            pick = self._safe_special(obs, risk, sold)
+            out.append(ProposedAction(
+                Action("offer_daily_special", {"dish": pick}),
+                priority=10, rationale="satisfaction bonus"))
+        return out
+
+    def _safe_special(self, obs: Observation, risk, sold: dict) -> str:
+        usable = {inv["ingredient"]: usable_inventory_kg(inv) for inv in obs.inventory}
+        candidates = []
+        for dish in obs.active_menu:
+            rec = obs.recipe(dish)
+            if not rec:
+                continue
+            ingredients = rec.get("ingredients", []) or []
+            if not all(
+                usable.get(i["ingredient"], 0.0) >= float(i.get("quantity_kg", 0) or 0)
+                for i in ingredients
+            ):
+                continue
+            covers = [
+                risk.ingredient_cover_days.get(i["ingredient"], 99.0)
+                for i in ingredients
+            ]
+            min_cover = min(covers) if covers else 99.0
+            candidates.append((min_cover, sold.get(dish, 0), dish))
+        if candidates:
+            candidates.sort(reverse=True)
+            return candidates[0][2]
+        return max(obs.active_menu, key=lambda d: sold.get(d, 0)) if sold else obs.active_menu[0]

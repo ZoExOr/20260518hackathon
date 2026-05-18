@@ -1,0 +1,7 @@
+requests>=2.31
+# optional, for offline tuning:
+scikit-optimize>=0.9      # Bayesian optimisation (harness falls back to random)
+# optional, for the LLM agents via the team's LiteLLM proxy:
+openai>=1.0
+# dev:
+pytest>=7.0
