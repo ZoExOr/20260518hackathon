@@ -22,6 +22,7 @@ from .base import (Controller, earliest_delivery_day, planning_shelf_life_days,
                    supplier_for, structural_stockout, usable_inventory_kg)
 from ..types import Observation, BeliefState, ProposedAction, Action
 from ..params import Params
+from ..renovation import renovation_prep_or_recovery
 
 
 class SupplyController:
@@ -62,6 +63,8 @@ class SupplyController:
                     eta_guard,
                     float(earliest_eta - obs.day) + params.delivery_guard_days,
                 )
+            if renovation_prep_or_recovery(obs, belief):
+                eta_guard += 1.0
             if cover_days >= eta_guard:
                 continue
 
@@ -69,6 +72,8 @@ class SupplyController:
                 params.target_days + params.safety_days + (2.0 if emergency else 0.0),
                 eta_guard + params.safety_days,
             )
+            if renovation_prep_or_recovery(obs, belief):
+                target_days += 1.0
             target_days = min(target_days, self._endgame_target_days(obs, ing, shelf.get(ing, 14)))
             target_kg = target_days * usage
             order_qty = max(0.0, target_kg - have)

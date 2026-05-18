@@ -18,6 +18,7 @@ from .base import Controller, serviceability_risk, structural_stockout
 from ..types import (Observation, BeliefState, ProposedAction, Action,
                       weekday_of_day)
 from ..params import Params
+from ..renovation import renovation_active, renovation_recovery
 
 _WEEKEND = {"Friday", "Saturday", "Sunday"}
 
@@ -55,8 +56,12 @@ class OperationsController:
             )]
 
         level = covers / max(1.0, params.covers_per_staff)
-        if belief.memory.get("capacity_reduced_until", 0) >= obs.day + 1:
+        if renovation_active(obs, belief):
             level -= 1.5
+            level = max(level, 5)
+        recovery_floor = 7 if renovation_recovery(obs, belief) else None
+        if recovery_floor is not None:
+            level += 0.5
         if weekday_of_day(obs.day + 1) in _WEEKEND:
             level += params.weekend_staff_bonus
 
@@ -68,6 +73,8 @@ class OperationsController:
             level += 1
         elif walk == "None" and peak_wait < 5 and obs.staff_level > params.staff_min:
             level -= 0.5  # gently trim idle capacity
+        if recovery_floor is not None:
+            level = max(level, recovery_floor)
         if not risk.critical and (
             walk == "Many" or obs.reputation_band in ("Poor", "Fair")
         ):

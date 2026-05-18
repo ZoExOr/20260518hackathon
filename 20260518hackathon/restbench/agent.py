@@ -24,6 +24,7 @@ from .regime import RegimeSupervisor, HeuristicRegime
 from .multiagent import (MultiAgentAdvisor, MultiAgentTrace,
                          advice_to_proposals)
 from .risk_gate import DeterministicRiskGate
+from .supply_ai import policy_param_overrides, select_supply_policy
 
 
 class Agent:
@@ -53,8 +54,12 @@ class Agent:
 
         mode, overrides = self.regime.decide(obs, belief, self.params)
         belief.mode = mode
-        p = replace(self.params, **{k: v for k, v in overrides.items()
-                                    if hasattr(self.params, k)})
+        supply_policy = select_supply_policy(obs, belief, self.params)
+        combined_overrides = {
+            **{k: v for k, v in overrides.items() if hasattr(self.params, k)},
+            **policy_param_overrides(supply_policy, self.params),
+        }
+        p = replace(self.params, **combined_overrides)
 
         proposals = {
             self.supply.name: self.supply.propose(obs, belief, p),
@@ -68,6 +73,11 @@ class Agent:
             advice, errors = self.multi_agent_advisor.collect_advice(
                 obs, belief, p, proposals)
             trace.advice = advice
+            trace.supply_runtime = {
+                "deterministic_policy": supply_policy,
+                "deterministic_policy_overrides": policy_param_overrides(
+                    supply_policy, self.params),
+            }
             trace.errors.extend(errors)
             overrides = {}
             for item in advice:
@@ -79,6 +89,12 @@ class Agent:
                     advice_to_proposals(item))
             if overrides:
                 p = replace(p, **overrides)
+                if any(k in overrides for k in (
+                    "max_order_cash_frac", "reorder_days", "target_days",
+                    "safety_days", "reliability_inflation", "waste_aversion",
+                )):
+                    proposals[self.supply.name] = self.supply.propose(
+                        obs, belief, p) + proposals.get(self.supply.name, [])
             self.last_multiagent_trace = trace
 
         composed = self.composer.compose(proposals, obs, belief)

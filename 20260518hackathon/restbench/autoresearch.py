@@ -12,7 +12,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from glob import glob
 from pathlib import Path
-from typing import Callable, Any
+from typing import Any, Callable
 
 from .params import Params
 from .runner import play_game
@@ -40,6 +40,10 @@ class ResearchResult:
 
 
 Evaluator = Callable[[Params, tuple[str, ...], tuple[int, ...]], list[float]]
+MetricSample = float | dict[str, float]
+SupplyEvaluator = Callable[
+    [Params, tuple[str, ...], tuple[int, ...]], list[MetricSample]
+]
 
 
 def _extract_total_score(final: dict) -> float:
@@ -244,5 +248,159 @@ class ResearchAgent:
             fh.write(
                 f"{tag}\t{score:.3f}\t{mean:.3f}\t{std:.3f}\t{status}\t"
                 f"{json.dumps(candidate.params_patch, sort_keys=True)}\t"
+                f"{candidate.hypothesis}\n"
+            )
+
+
+class SupplyResearchAgent(ResearchAgent):
+    """Supply-scoped autoresearch with a stockout/waste-aware objective."""
+
+    def __init__(self, run_dir: str = "research_runs",
+                 robustness_lambda: float = 0.8,
+                 replay_pattern: str = "replays/*.jsonl"):
+        super().__init__(
+            run_dir=run_dir,
+            robustness_lambda=robustness_lambda,
+            replay_pattern=replay_pattern,
+        )
+        self.frontier_path = self.dir / "supply_frontier.json"
+        self.results_path = self.dir / "supply_results.tsv"
+        if not self.results_path.exists():
+            self.results_path.write_text(
+                "tag\tscore\tmean\tstd\tstockout_days\twaste_cost\tstatus\t"
+                "params_patch\tprompt_patch\thypothesis\n",
+                encoding="utf-8",
+            )
+
+    def propose_candidate(self, frontier: dict[str, Any]) -> ResearchCandidate:
+        signals = self._replay_signals()
+        history = frontier.get("history", []) or []
+        if signals["stockout_days"] >= max(1, signals["turns"] // 10):
+            return ResearchCandidate(
+                params_patch={
+                    "reorder_days": 4.5,
+                    "target_days": 9.0,
+                    "safety_days": 3.0,
+                    "reliability_inflation": 1.7,
+                },
+                prompt_patch={
+                    "supply": "Prefer fastest ETA over cheapest supplier when cover_days < ETA guard."
+                },
+                hypothesis="Supply replay shows stockouts; test faster defensive replenishment.",
+            )
+        if signals["waste_cost"] > 500:
+            return ResearchCandidate(
+                params_patch={"target_days": 6.0, "waste_aversion": 1.7},
+                prompt_patch={
+                    "supply": "Cap fresh orders to shelf-life cover unless risk is critical."
+                },
+                hypothesis="Supply replay shows waste; test tighter fresh inventory sizing.",
+            )
+        step = len(history) % 4
+        if step == 0:
+            patch = {"reorder_days": 4.0, "target_days": 8.5, "safety_days": 2.75}
+            prompt = {"supply": "During renovation recovery, restore a 5-6 dish menu first."}
+            hyp = "Renovation recovery may need a larger recovery buffer."
+        elif step == 1:
+            patch = {"reliability_inflation": 1.8, "max_order_cash_frac": 0.42}
+            prompt = {"supply": "Under supplier alerts, diversify and inflate unreliable suppliers."}
+            hyp = "Supply crisis may reward reliability-weighted ordering."
+        elif step == 2:
+            patch = {"target_days": 5.5, "safety_days": 1.0, "waste_aversion": 1.8}
+            prompt = {"supply": "In endgame, trim late fresh orders aggressively."}
+            hyp = "Endgame trim can reduce waste and cash drag."
+        else:
+            patch = {"reorder_days": 3.75, "target_days": 7.5, "safety_days": 2.25}
+            prompt = {"supply": "Use balanced coverage unless serviceable_dish_count < 5."}
+            hyp = "Balanced coverage may preserve baseline profit while preventing stockouts."
+        return ResearchCandidate(
+            params_patch=patch,
+            prompt_patch=prompt,
+            hypothesis=hyp,
+        )
+
+    def evaluate_candidate(self, candidate: ResearchCandidate,
+                           evaluator: SupplyEvaluator,
+                           scenarios: tuple[str, ...],
+                           seeds: tuple[int, ...]) -> tuple[float, float, float]:
+        params = self._candidate_params(self._base_params(self.load_frontier()), candidate)
+        samples = evaluator(params, scenarios, seeds)
+        scores, stockouts, waste = self._supply_metrics(samples)
+        mean = statistics.fmean(scores)
+        std = statistics.pstdev(scores) if len(scores) > 1 else 0.0
+        objective = (
+            mean
+            - self.robustness_lambda * std
+            - 300.0 * stockouts
+            - 0.5 * waste
+        )
+        return objective, mean, std
+
+    def run_once(self, evaluator: SupplyEvaluator, scenarios: tuple[str, ...],
+                 seeds: tuple[int, ...],
+                 candidate: ResearchCandidate | None = None) -> ResearchResult:
+        frontier = self.load_frontier()
+        candidate = candidate or self.propose_candidate(frontier)
+        tag = f"s{int(time.time())}"
+        params = self._candidate_params(self._base_params(frontier), candidate)
+        samples = evaluator(params, scenarios, seeds)
+        scores, stockouts, waste = self._supply_metrics(samples)
+        mean = statistics.fmean(scores)
+        std = statistics.pstdev(scores) if len(scores) > 1 else 0.0
+        score = (
+            mean
+            - self.robustness_lambda * std
+            - 300.0 * stockouts
+            - 0.5 * waste
+        )
+        best = float(frontier.get("best_score", float("-inf")))
+        status = "keep" if score > best else "discard"
+        self._append_supply_result(
+            tag, score, mean, std, stockouts, waste, status, candidate)
+
+        if status == "keep":
+            history = list(frontier.get("history", []) or [])
+            history.append({
+                "tag": tag,
+                "score": score,
+                "mean": mean,
+                "std": std,
+                "stockout_days": stockouts,
+                "waste_cost": waste,
+                "candidate": candidate.to_dict(),
+            })
+            self.frontier_path.write_text(json.dumps({
+                "best_score": score,
+                "params": asdict(params),
+                "prompt_patch": candidate.prompt_patch,
+                "history": history,
+            }, indent=2, sort_keys=True), encoding="utf-8")
+
+        return ResearchResult(tag, score, mean, std, status, candidate)
+
+    def _supply_metrics(self, samples: list[MetricSample]
+                        ) -> tuple[list[float], float, float]:
+        scores = []
+        stockouts = 0.0
+        waste = 0.0
+        for sample in samples:
+            if isinstance(sample, dict):
+                scores.append(float(sample.get("score", sample.get("total_score", 0))))
+                stockouts += float(sample.get("stockout_days", 0) or 0)
+                waste += float(sample.get("waste_cost", 0) or 0)
+            else:
+                scores.append(float(sample))
+        return scores or [float("-inf")], stockouts, waste
+
+    def _append_supply_result(self, tag: str, score: float, mean: float,
+                              std: float, stockouts: float, waste: float,
+                              status: str,
+                              candidate: ResearchCandidate) -> None:
+        with self.results_path.open("a", encoding="utf-8") as fh:
+            fh.write(
+                f"{tag}\t{score:.3f}\t{mean:.3f}\t{std:.3f}\t"
+                f"{stockouts:.3f}\t{waste:.3f}\t{status}\t"
+                f"{json.dumps(candidate.params_patch, sort_keys=True)}\t"
+                f"{json.dumps(candidate.prompt_patch, sort_keys=True)}\t"
                 f"{candidate.hypothesis}\n"
             )

@@ -4,7 +4,7 @@ Usage:
     from agents.runner import run_game
     from agents.naive_rule import strategy
 
-    result = run_game(strategy, base_url="http://localhost:8001", team_name="naive", seed=42)
+    result = run_game(strategy, base_url="http://52.48.183.209:8001", team_name="naive", seed=42)
     print(result)
 
 A strategy is a callable: (observation: dict, day: int) -> list[dict]
@@ -23,7 +23,41 @@ import httpx
 
 Strategy = Callable[[dict, int], list[dict]]
 
-DEFAULT_URL = os.getenv("RESTBENCH_URL", "http://localhost:8001")
+DEFAULT_URL = os.getenv("RESTBENCH_URL", "http://52.48.183.209:8001")
+
+
+def _request_json(client: httpx.Client, method: str, path: str,
+                  *, json_body: dict | None = None,
+                  max_retries: int = 5) -> dict:
+    """HTTP helper with 429 backoff.
+
+    `agents.evaluate` maps any exception to -100000, so transient server
+    throttling must be handled here instead of looking like a strategy failure.
+    """
+    last_error: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            r = client.request(method, path, json=json_body)
+            if r.status_code == 429:
+                retry_after = r.headers.get("Retry-After")
+                if retry_after:
+                    delay = min(60.0, max(1.0, float(retry_after)))
+                else:
+                    delay = min(60.0, 3.0 * (2 ** attempt))
+                time.sleep(delay)
+                continue
+            r.raise_for_status()
+            return r.json()
+        except httpx.HTTPError as exc:
+            last_error = exc
+            time.sleep(min(15.0, 1.5 * (attempt + 1)))
+    if last_error is not None:
+        url = str(client.base_url).rstrip("/") + "/" + path.lstrip("/")
+        raise RuntimeError(
+            f"{method} {url} failed after "
+            f"{max_retries} attempts: {last_error}"
+        ) from last_error
+    raise RuntimeError(f"{method} {path} failed after retries")
 
 
 def run_game(
@@ -37,13 +71,11 @@ def run_game(
 ) -> dict:
     transport = httpx.HTTPTransport(retries=3)
     with httpx.Client(base_url=base_url, timeout=60.0, transport=transport) as client:
-        r = client.post("/games", json={
+        data = _request_json(client, "POST", "/games", json_body={
             "team_name": team_name,
             "scenario": scenario,
             "seed": seed,
         })
-        r.raise_for_status()
-        data = r.json()
         game_id = data["game_id"]
         observation = data["observation"]
         day = data["day"]
@@ -57,9 +89,8 @@ def run_game(
             accepted = 0
             rejected = 0
             for tc in tool_calls:
-                r = client.post(f"/games/{game_id}/action", json=tc)
-                r.raise_for_status()
-                result = r.json()
+                result = _request_json(
+                    client, "POST", f"/games/{game_id}/action", json_body=tc)
                 if result["status"] == "accepted":
                     accepted += 1
                 else:
@@ -67,9 +98,7 @@ def run_game(
                     if verbose:
                         print(f"  Day {day}: REJECTED {tc['tool']}: {result['reason']}")
 
-            r = client.post(f"/games/{game_id}/end-turn")
-            r.raise_for_status()
-            turn_data = r.json()
+            turn_data = _request_json(client, "POST", f"/games/{game_id}/end-turn")
 
             observation = turn_data["observation"]
             day = turn_data["day"]
@@ -89,9 +118,7 @@ def run_game(
                     print(f"Game ended: {status}")
                 break
 
-        r = client.get(f"/games/{game_id}/score")
-        r.raise_for_status()
-        score_data = r.json()
+        score_data = _request_json(client, "GET", f"/games/{game_id}/score")
 
         if verbose:
             s = score_data['score']

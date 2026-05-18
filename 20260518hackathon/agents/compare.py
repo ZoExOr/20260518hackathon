@@ -11,7 +11,8 @@ from agents.naive_rule import strategy as naive_rule_strategy
 
 
 def main():
-    base_url = sys.argv[1] if len(sys.argv) > 1 else os.getenv("RESTBENCH_URL", "http://localhost:8001")
+    base_url = sys.argv[1] if len(sys.argv) > 1 else os.getenv(
+        "RESTBENCH_URL", "http://52.48.183.209:8001")
     seed = 42
 
     print("=" * 60)

@@ -14,6 +14,9 @@ from .llm_client import DEFAULT_LLM_MODEL, chat_completion
 from .params import Params
 from .types import Action, BeliefState, Observation, ProposedAction
 from .controllers.base import serviceability_risk
+from .supply_ai import (build_supply_context, parse_supply_advice,
+                        load_supply_prompt_patch, should_call_supply_llm,
+                        supply_advice_to_actions)
 
 ALLOWED_TOOLS = {
     "place_order", "set_staff_level", "set_menu", "set_price",
@@ -85,6 +88,7 @@ class MultiAgentTrace:
     advice: list[AgentAdvice] = field(default_factory=list)
     risk_review: RiskReview | None = None
     deterministic_risk: list[dict[str, Any]] = field(default_factory=list)
+    supply_runtime: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -92,6 +96,7 @@ class MultiAgentTrace:
             "advice": [a.to_dict() for a in self.advice],
             "risk_review": self.risk_review.to_dict() if self.risk_review else None,
             "deterministic_risk": list(self.deterministic_risk),
+            "supply_runtime": dict(self.supply_runtime),
             "errors": list(self.errors),
         }
 
@@ -243,6 +248,7 @@ def compact_context(obs: Observation, belief: BeliefState,
         },
         "params": {k: getattr(params, k) for k in Params.TUNABLE},
         "supply_risk": serviceability_risk(obs, belief, params).to_dict(),
+        "supply_ai": build_supply_context(obs, belief, params),
     }
 
 
@@ -267,21 +273,60 @@ class RoleLLMAgent:
 
     def advise(self, obs: Observation, belief: BeliefState, params: Params,
                baseline: list[ProposedAction]) -> AgentAdvice:
+        output_schema = {
+            "role": self.role,
+            "summary": "short string",
+            "proposed_actions": [{"tool": "set_staff_level", "args": {"level": 6}}],
+            "param_overrides": {"target_days": 8.0},
+            "constraints": ["short string"],
+            "risks": ["short string"],
+            "confidence": 0.0,
+        }
+        if self.role == "supply":
+            output_schema = {
+                "role": "supply",
+                "summary": "short string",
+                "policy_choice": "defensive",
+                "param_overrides": {
+                    "reorder_days": 4.0,
+                    "target_days": 8.0,
+                    "safety_days": 2.5,
+                    "reliability_inflation": 1.4,
+                    "waste_aversion": 1.1,
+                    "max_order_cash_frac": 0.4,
+                },
+                "order_adjustments": [{
+                    "action": "replace_supplier",
+                    "supplier": "Fast Supplier",
+                    "ingredient": "Chicken",
+                    "quantity_kg": 12.0,
+                    "reason": "fastest ETA restores menu coverage",
+                }],
+                "menu_recovery_priority": ["Chicken", "Mozzarella"],
+                "risks": ["short string"],
+                "confidence": 0.0,
+            }
         payload = {
             "role": self.role,
             "context": compact_context(obs, belief, params),
             "baseline_proposals": actions_payload(baseline),
-            "output_schema": {
-                "role": self.role,
-                "summary": "short string",
-                "proposed_actions": [{"tool": "set_staff_level", "args": {"level": 6}}],
-                "param_overrides": {"target_days": 8.0},
-                "constraints": ["short string"],
-                "risks": ["short string"],
-                "confidence": 0.0,
-            },
+            "output_schema": output_schema,
         }
         data = self.client.complete_json(self.system_prompt, payload)
+        if self.role == "supply":
+            supply_advice = parse_supply_advice(data, obs, params)
+            return AgentAdvice(
+                role="supply",
+                summary=(
+                    f"policy={supply_advice.policy_choice}; "
+                    f"{supply_advice.summary}"
+                )[:1000],
+                proposed_actions=supply_advice_to_actions(supply_advice),
+                param_overrides=supply_advice.param_overrides,
+                constraints=supply_advice.menu_recovery_priority[:8],
+                risks=supply_advice.risks,
+                confidence=supply_advice.confidence,
+            )
         return parse_agent_advice(self.role, data, obs)
 
 
@@ -320,10 +365,22 @@ class RiskLLMAgent:
 
 
 SUPPLY_PROMPT = (
-    "You are SupplyLLMAgent. Focus only on inventory, expiry, pending orders, "
-    "supplier reliability, lead time and delivery days. Return ONLY JSON. "
-    "Read context.supply_risk first. Prefer conservative suggestions that "
-    "restore at least five serviceable dishes and reduce stockout/waste risk."
+    "You are SupplyLLMAgent, a bounded supply policy optimizer for a restaurant "
+    "simulation. Return ONLY JSON matching output_schema. Read "
+    "context.supply_ai first; its ETA and cover-day fields are deterministic, "
+    "so never recompute calendar dates yourself. Objective order: (1) prevent "
+    "stockout of at least five serviceable menu items, (2) avoid orders that "
+    "arrive too late to help, (3) minimize waste for short shelf-life items, "
+    "(4) minimize cost. Choose exactly one policy_choice from the provided "
+    "policy_options. Allowed policies: lean, balanced, defensive, "
+    "renovation_recovery, crisis_diversified, endgame_trim. No-go rules: do "
+    "not duplicate useful pending orders; do not create orders arriving after "
+    "the game ends; do not recommend fresh stock above shelf-life cover; do "
+    "not over-order for dishes outside the active/recovery menu. Few-shot "
+    "rubric: if risk is high and a pricier supplier has earlier ETA, prefer "
+    "the faster supplier; during renovation recovery, restore a 5-6 dish menu "
+    "and use a modest buffer; in endgame, cap fresh orders to remaining service "
+    "days; under supplier crisis, diversify and inflate reliability buffers."
 )
 DEMAND_PROMPT = (
     "You are DemandLLMAgent. Focus only on weather, weekday demand, prices, "
@@ -343,7 +400,8 @@ class MultiAgentAdvisor:
     def __init__(self, client: LLMClient | None = None,
                  *, allow_fallback: bool = True):
         self.allow_fallback = allow_fallback
-        self.supply = RoleLLMAgent("supply", SUPPLY_PROMPT, client)
+        self.supply = RoleLLMAgent(
+            "supply", SUPPLY_PROMPT + load_supply_prompt_patch(), client)
         self.demand = RoleLLMAgent("demand", DEMAND_PROMPT, client)
         self.operations = RoleLLMAgent("operations", OPERATIONS_PROMPT, client)
         self.risk = RiskLLMAgent(client)
@@ -359,6 +417,8 @@ class MultiAgentAdvisor:
             ("demand", self.demand),
             ("operations", self.operations),
         ):
+            if role == "supply" and not should_call_supply_llm(obs, belief, params):
+                continue
             try:
                 baseline_key = "pricing" if role == "demand" else role
                 advice = agent.advise(

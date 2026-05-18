@@ -21,6 +21,7 @@ internals is the single highest-value task — see TODO(belief) markers.
 from __future__ import annotations
 
 from .types import (Observation, BeliefState, SERVICE_HOURS, weekday_of_day)
+from .renovation import renovation_active
 
 _BAND_TO_SCALAR = {  # rough midpoints; tune against review stream
     "Poor": 1.5, "Fair": 2.5, "Good": 3.5, "Very Good": 4.2, "Excellent": 4.8,
@@ -88,11 +89,12 @@ class BeliefEstimator:
         true_covers = self._uncensor_covers(obs)
         if true_covers > 0:
             prev = b.weekday_covers.get(wd, true_covers)
-            b.weekday_covers[wd] = (1 - _EMA) * prev + _EMA * true_covers
+            ema = _EMA * (0.25 if renovation_active(obs, b) else 1.0)
+            b.weekday_covers[wd] = (1 - ema) * prev + ema * true_covers
 
         # weather effect: ratio of today's covers to this weekday's mean.
         w = obs.weather_today
-        if true_covers > 0 and wd in b.weekday_covers:
+        if true_covers > 0 and wd in b.weekday_covers and not renovation_active(obs, b):
             ratio = true_covers / max(1.0, b.weekday_covers[wd])
             prev = b.weather_factor.get(w, 1.0)
             b.weather_factor[w] = (1 - _EMA) * prev + _EMA * ratio

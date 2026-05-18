@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 import os
 
-from restbench.autoresearch import ResearchAgent, live_evaluator
+from restbench.autoresearch import ResearchAgent, SupplyResearchAgent, live_evaluator
 
 TEAM = os.environ.get("RESTBENCH_TEAM", "prosus-team-research")
 
@@ -32,9 +32,12 @@ def main() -> None:
                         type=float, default=1.0)
     parser.add_argument("--multi-agent", action="store_true",
                         help="Evaluate candidates with the multi-agent runtime enabled")
+    parser.add_argument("--supply-only", action="store_true",
+                        help="Use the supply-scoped frontier/objective")
     args = parser.parse_args()
 
-    agent = ResearchAgent(
+    cls = SupplyResearchAgent if args.supply_only else ResearchAgent
+    agent = cls(
         run_dir=args.run_dir,
         robustness_lambda=args.robustness_lambda,
     )

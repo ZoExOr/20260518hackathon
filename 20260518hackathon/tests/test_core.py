@@ -11,14 +11,21 @@ from restbench.params import Params
 from restbench.controllers.base import earliest_delivery_day
 from restbench.controllers.base import serviceability_risk
 from restbench.controllers.pricing import PricingController
+from restbench.controllers.operations import OperationsController
 from restbench.controllers.supply import SupplyController
 from restbench.belief import BeliefEstimator
 from restbench.safety import SafetyGate
 from restbench.risk_gate import DeterministicRiskGate
+from restbench.regime import HeuristicRegime
 from restbench.multiagent import (MultiAgentAdvisor, parse_agent_advice,
                                   advice_to_proposals, parse_json_object,
                                   parse_risk_review)
-from restbench.autoresearch import ResearchAgent, ResearchCandidate
+from restbench.autoresearch import ResearchAgent, ResearchCandidate, SupplyResearchAgent
+from restbench.supply_ai import (build_supply_context, parse_supply_advice,
+                                 policy_param_overrides,
+                                 select_supply_policy,
+                                 should_call_supply_llm,
+                                 supply_advice_to_actions)
 from restbench.agent import Agent
 
 
@@ -170,6 +177,67 @@ def test_supply_sizes_new_orders_from_planning_shelf_life_not_stale_stock():
         "expired current stock must not cap fresh replenishment at min order"
 
 
+def test_renovation_active_does_not_over_shrink_supply_params():
+    obs = Observation({
+        "day": 2, "day_of_week": "Tuesday", "days_remaining": 28,
+        "cash": 15000.0, "staff_level": 8, "reputation_band": "Very Good",
+        "alerts": ["Renovation: some tables are unavailable"],
+        "inventory": [], "supplier_catalog": [], "pending_orders": [],
+        "delivery_history": [], "menu_book": [], "active_menu": [],
+        "recent_reviews": [], "service_summary": {},
+    })
+    belief = BeliefEstimator().update(obs)
+    _, overrides = HeuristicRegime().decide(obs, belief, Params())
+    assert overrides["target_days"] >= 6.0
+    assert overrides["safety_days"] >= 1.5
+
+
+def test_renovation_recovery_boosts_supply_and_staff_floor():
+    obs = Observation({
+        "day": 14, "day_of_week": "Sunday", "days_remaining": 16,
+        "cash": 15000.0, "staff_level": 5, "reputation_band": "Good",
+        "inventory": [], "supplier_catalog": [], "pending_orders": [],
+        "delivery_history": [],
+        "menu_book": [
+            {"name": f"Dish {i}", "base_price": 10.0, "is_active": True,
+             "ingredients": []}
+            for i in range(5)
+        ],
+        "active_menu": [f"Dish {i}" for i in range(5)],
+        "recent_reviews": [], "service_summary": {},
+        "customer_trend": "Stable", "weather_forecast": [],
+    })
+    belief = BeliefState(weekday_covers={"Monday": 90.0})
+    belief.memory["capacity_reduced_until"] = 12
+    _, overrides = HeuristicRegime().decide(obs, belief, Params())
+    assert overrides["target_days"] > Params().target_days
+    out = OperationsController(forecaster=lambda _obs, _offset: 80.0).propose(
+        obs, belief, Params())
+    assert out and out[0].action.args["level"] >= 7
+
+
+def test_renovation_active_low_covers_are_downweighted():
+    est = BeliefEstimator()
+    first = Observation({
+        "day": 1, "day_of_week": "Monday", "days_remaining": 29,
+        "cash": 15000.0, "staff_level": 8, "reputation_band": "Very Good",
+        "alerts": ["Renovation: some tables are unavailable"],
+        "inventory": [], "supplier_catalog": [], "pending_orders": [],
+        "delivery_history": [], "menu_book": [], "active_menu": [],
+        "recent_reviews": [], "service_summary": {"total_covers": 100},
+    })
+    second = Observation({
+        **first.raw,
+        "day": 8,
+        "day_of_week": "Monday",
+        "service_summary": {"total_covers": 40},
+        "alerts": [],
+    })
+    belief = est.update(first)
+    belief = est.update(second)
+    assert belief.weekday_covers["Monday"] > 90.0
+
+
 def test_belief_supplier_update_tolerates_missing_order_day():
     obs = Observation({
         "day": 8, "day_of_week": "Monday", "days_remaining": 22,
@@ -304,6 +372,67 @@ def test_agent_advice_to_proposals_filters_invalid_actions():
     assert len(proposals) == 1
     assert proposals[0].action.tool == "place_order"
     assert advice.param_overrides == {"target_days": 8.0}
+
+
+def test_supply_context_contains_calendar_and_recovery_ranking():
+    obs = _critical_supply_obs()
+    ctx = build_supply_context(obs, BeliefState(), Params())
+    row = next(x for x in ctx["ingredient_dashboard"]
+               if x["ingredient"] == "Chicken")
+    assert row["usable_kg"] == 0.0
+    assert row["earliest_supplier_delivery_day"] is not None
+    assert row["supplier_options"][0]["supplier"] == "LateSupplier"
+    assert ctx["menu_recovery_ranking"]
+
+
+def test_supply_llm_trigger_skips_low_risk_and_runs_high_risk():
+    assert should_call_supply_llm(_critical_supply_obs(), BeliefState(), Params())
+    quiet = _rich_obs()
+    quiet.raw["day"] = 10
+    quiet.raw["days_remaining"] = 20
+    quiet.raw["inventory"][0]["total_kg"] = 50.0
+    quiet.raw["inventory"][0]["batches"] = [
+        {"quantity_kg": 50.0, "expires_in_days": 5}
+    ]
+    assert not should_call_supply_llm(quiet, BeliefState(), Params())
+
+
+def test_supply_advice_parser_rejects_invalid_orders_and_clamps_params():
+    obs = _rich_obs()
+    advice = parse_supply_advice({
+        "policy_choice": "crisis_diversified",
+        "summary": "restore chicken",
+        "confidence": 0.9,
+        "param_overrides": {"target_days": 100.0, "covers_per_staff": 1},
+        "order_adjustments": [
+            {"action": "replace_supplier", "supplier": "S1",
+             "ingredient": "Chicken", "quantity_kg": 8.0},
+            {"action": "replace_supplier", "supplier": "Missing",
+             "ingredient": "Chicken", "quantity_kg": 8.0},
+        ],
+    }, obs, Params())
+    assert advice.param_overrides["target_days"] == Params.bounds()["target_days"][1]
+    assert "covers_per_staff" not in advice.param_overrides
+    actions = supply_advice_to_actions(advice)
+    assert len(actions) == 1
+    assert actions[0].args["supplier"] == "S1"
+
+
+def test_supply_policy_overrides_renovation_and_endgame():
+    obs = _rich_obs()
+    obs.raw["alerts"] = ["Renovation: dining room capacity reduced"]
+    policy = select_supply_policy(obs, BeliefState(), Params())
+    assert policy == "renovation_recovery"
+    overrides = policy_param_overrides(policy, Params())
+    assert overrides["target_days"] > Params().target_days
+
+    endgame = _rich_obs()
+    endgame.raw["day"] = 28
+    endgame.raw["days_remaining"] = 2
+    policy = select_supply_policy(endgame, BeliefState(), Params())
+    assert policy == "endgame_trim"
+    overrides = policy_param_overrides(policy, Params())
+    assert overrides["waste_aversion"] > Params().waste_aversion
 
 
 class _BadClient:
@@ -470,3 +599,25 @@ def test_research_loop_keeps_improvement_and_discards_regression(tmp_path):
     text = (tmp_path / "results.tsv").read_text(encoding="utf-8")
     assert "tag\tscore\tmean\tstd\tstatus\tparams_patch\thypothesis" in text
     assert "keep" in text and "discard" in text
+
+
+def test_supply_research_penalizes_stockout_and_waste(tmp_path):
+    agent = SupplyResearchAgent(run_dir=str(tmp_path))
+    candidate = ResearchCandidate(
+        params_patch={"target_days": 8.0},
+        prompt_patch={"supply": "restore menu"},
+        hypothesis="supply candidate")
+
+    def good_eval(params, scenarios, seeds):
+        return [{"score": 1000.0, "stockout_days": 0, "waste_cost": 0.0}]
+
+    result = agent.run_once(good_eval, ("renovation",), (42,), candidate=candidate)
+    assert result.status == "keep"
+
+    def bad_eval(params, scenarios, seeds):
+        return [{"score": 1000.0, "stockout_days": 3, "waste_cost": 400.0}]
+
+    result = agent.run_once(bad_eval, ("renovation",), (42,), candidate=candidate)
+    assert result.status == "discard"
+    text = (tmp_path / "supply_results.tsv").read_text(encoding="utf-8")
+    assert "stockout_days\twaste_cost" in text

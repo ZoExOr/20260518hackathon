@@ -16,7 +16,7 @@ Usage:
     # Quiet mode (summary table only)
     python -m agents.evaluate agents.naive_rule --quiet
 
-    # Control parallelism (default: 5, matches server limit)
+    # Control parallelism (default: 3, intentionally below server limit)
     python -m agents.evaluate agents.naive_rule --parallel 3
 
 Scenarios are fetched from the server's GET /scenarios endpoint.
@@ -56,6 +56,16 @@ def fetch_scenarios(base_url: str) -> list[str]:
         return list(FALLBACK_SCENARIOS)
 
 
+def available_scenarios(base_url: str) -> list[str]:
+    """Best-effort scenario discovery without falling back to locked names."""
+    try:
+        r = httpx.get(f"{base_url}/scenarios", timeout=10.0)
+        r.raise_for_status()
+        return [s["name"] for s in r.json()]
+    except Exception:
+        return []
+
+
 def load_strategy(module_path: str):
     """Dynamically import a strategy function from a dotted module path."""
     mod = importlib.import_module(module_path)
@@ -65,7 +75,8 @@ def load_strategy(module_path: str):
     return mod.strategy
 
 
-MAX_PARALLEL = 10
+DEFAULT_URL = os.getenv("RESTBENCH_URL", "http://52.48.183.209:8001")
+MAX_PARALLEL = 3
 
 
 def _run_one(
@@ -236,8 +247,8 @@ def main():
     )
     parser.add_argument(
         "--url",
-        default=os.getenv("RESTBENCH_URL", "http://localhost:8001"),
-        help="Server URL (default: RESTBENCH_URL env var or http://localhost:8001)",
+        default=DEFAULT_URL,
+        help=f"Server URL (default: RESTBENCH_URL env var or {DEFAULT_URL})",
     )
     parser.add_argument(
         "--team-name",
@@ -260,12 +271,27 @@ def main():
     strategy = load_strategy(args.agent)
 
     if args.scenarios:
-        scenarios = args.scenarios.split(",")
+        requested = [s.strip() for s in args.scenarios.split(",") if s.strip()]
+        available = available_scenarios(args.url)
+        if available:
+            locked = [s for s in requested if s not in available]
+            if locked:
+                print(
+                    "Warning: skipping unavailable scenarios from server: "
+                    + ", ".join(locked)
+                )
+            scenarios = [s for s in requested if s in available]
+            if not scenarios:
+                print("Error: none of the requested scenarios are available.")
+                print("Available scenarios: " + ", ".join(available))
+                sys.exit(1)
+        else:
+            scenarios = requested
     else:
         scenarios = fetch_scenarios(args.url)
 
     seeds = [int(s) for s in args.seeds.split(",")]
-    team_name = args.team_name or args.agent.split(".")[-1]
+    team_name = args.team_name or os.getenv("RESTBENCH_TEAM") or args.agent.split(".")[-1]
 
     print(f"Agent:     {args.agent}")
     print(f"Scenarios: {', '.join(scenarios)}")
