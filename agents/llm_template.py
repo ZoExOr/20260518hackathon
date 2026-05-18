@@ -1,33 +1,29 @@
-"""LLM agent template — copy this and improve the prompt to build your agent.
-
-Uses LiteLLM so you can swap models easily via the AGENT_MODEL env var.
-This template sends the raw observation to the LLM with a minimal prompt.
-It works, but there's a LOT of room to improve:
-  - Write a better system prompt with domain strategy
-  - Add conversation history so the LLM remembers previous days
-  - Filter/summarize the observation to focus on what matters
-  - Tune temperature, model choice, etc.
-"""
+"""LLM agent template — Local Ollama Version"""
 
 from __future__ import annotations
 
 import json
-import os
 import sys
 
-import litellm
 import ollama
 
 from agents.runner import run_game
-
-MODEL = os.getenv("AGENT_MODEL", "openai/gpt-4.1-mini")
 
 SYSTEM_PROMPT = """\
 You manage an Italian restaurant for 30 simulated days. Each day you receive
 an observation (JSON) describing your restaurant's state: cash, inventory,
 suppliers, menu, reputation, yesterday's service results, and more.
 
-Respond with ONLY a JSON array of tool calls. No explanation, no markdown.
+Respond ONLY with a valid JSON object containing an "actions" array of tool calls.
+No explanation, no markdown.
+
+Format Example:
+{
+  "actions": [
+    {"tool": "set_staff_level", "args": {"level": 5}},
+    {"tool": "run_happy_hour", "args": {}}
+  ]
+}
 
 Available tools:
 - place_order: {"tool": "place_order", "args": {"supplier": "...", "ingredient": "...", "quantity_kg": N}}
@@ -49,24 +45,21 @@ def strategy(observation: dict, day: int) -> list[dict]:
     user_msg = f"Day {day}/30. Here is today's observation:\n\n{json.dumps(observation, indent=2)}"
 
     try:
-        """
-        response = litellm.completion(
-            model=MODEL,
+        response = ollama.chat(
+            model="qwen3.6:27b-coding-mxfp8",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
             ],
-            temperature=0.3,
-            max_tokens=1000,
-        )
-        content = response.choices[0].message.content.strip()
-        """
-
-        response = ollama.chat(
-            model="qwen3.6:27b-coding-mxfp8",
-            messages=[{"role": "user", "content": SYSTEM_PROMPT}],
+            format="json",
             stream=False,
             think=False,
+            options={
+                "temperature": 0.0,
+                "num_predict": 512,
+                "num_ctx": 4096,
+            },
+            keep_alive="1h",
         )
 
         content = response["message"]["content"].strip()
@@ -77,9 +70,13 @@ def strategy(observation: dict, day: int) -> list[dict]:
                 content = content[:-3]
             content = content.strip()
 
-        tool_calls = json.loads(content)
+        parsed_json = json.loads(content)
+
+        tool_calls = parsed_json.get("actions", [])
+
         if not isinstance(tool_calls, list):
             return []
+
         return tool_calls
 
     except Exception as e:
@@ -90,10 +87,13 @@ def strategy(observation: dict, day: int) -> list[dict]:
 if __name__ == "__main__":
     """
     if not (os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")):
-        print("Set OPENAI_API_KEY or ANTHROPIC_API_KEY first.")
-        print(f"Using model: {MODEL} (override with AGENT_MODEL env var)")
-        sys.exit(1)
+            print("Set OPENAI_API_KEY or ANTHROPIC_API_KEY first.")
+            print(f"Using model: {MODEL} (override with AGENT_MODEL env var)")
+            sys.exit(1)
+
     print(f"Using model: {MODEL}")
     """
 
-    result = run_game(strategy, team_name="llm_template", seed=42)
+    # Removed the API key checks since you are running locally
+    print("Using local Ollama model...")
+    result = run_game(strategy, team_name="local_ai_chef", seed=42)
