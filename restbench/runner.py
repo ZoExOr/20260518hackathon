@@ -161,6 +161,8 @@ def play_game(team_name: str, scenario: str = "baseline", seed: int = 42,
             print(f"  next_obs inventory={_format_inventory(obs)}")
 
     final = client.score(game_id)
+    if replay:
+        replay.log_final(scenario, seed, final)
     if verbose:
         print(f"FINAL [{scenario}/{seed}] score={_extract_total_score(final)}")
     return final

@@ -30,5 +30,14 @@ class ReplayStore:
             "day_result": day_result}) + "\n")
         self._fh.flush()
 
+    def log_final(self, scenario: str, seed: int, final: dict[str, Any]) -> None:
+        self._fh.write(json.dumps({
+            "scenario": scenario,
+            "seed": seed,
+            "kind": "final_score",
+            "final": final,
+        }) + "\n")
+        self._fh.flush()
+
     def close(self) -> None:
         self._fh.close()
