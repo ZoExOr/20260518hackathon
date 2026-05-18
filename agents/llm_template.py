@@ -16,6 +16,7 @@ import os
 import sys
 
 import litellm
+import ollama
 
 from agents.runner import run_game
 
@@ -48,6 +49,7 @@ def strategy(observation: dict, day: int) -> list[dict]:
     user_msg = f"Day {day}/30. Here is today's observation:\n\n{json.dumps(observation, indent=2)}"
 
     try:
+        """
         response = litellm.completion(
             model=MODEL,
             messages=[
@@ -58,6 +60,16 @@ def strategy(observation: dict, day: int) -> list[dict]:
             max_tokens=1000,
         )
         content = response.choices[0].message.content.strip()
+        """
+
+        response = ollama.chat(
+            model="qwen3.6:27b-coding-mxfp8",
+            messages=[{"role": "user", "content": SYSTEM_PROMPT}],
+            stream=False,
+            think=False,
+        )
+
+        content = response["message"]["content"].strip()
 
         if content.startswith("```"):
             content = content.split("\n", 1)[1] if "\n" in content else content[3:]
@@ -76,9 +88,12 @@ def strategy(observation: dict, day: int) -> list[dict]:
 
 
 if __name__ == "__main__":
+    """
     if not (os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")):
         print("Set OPENAI_API_KEY or ANTHROPIC_API_KEY first.")
         print(f"Using model: {MODEL} (override with AGENT_MODEL env var)")
         sys.exit(1)
     print(f"Using model: {MODEL}")
+    """
+
     result = run_game(strategy, team_name="llm_template", seed=42)
