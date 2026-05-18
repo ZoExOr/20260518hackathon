@@ -24,6 +24,21 @@ from ..types import Observation, BeliefState, ProposedAction, Action
 from ..params import Params
 
 
+STAPLE_USAGE_FLOOR_KG_PER_COVER = {
+    "Flour": 0.08,
+    "Tomato Sauce": 0.035,
+    "Mozzarella": 0.045,
+    "Chicken": 0.045,
+    "Cream": 0.035,
+    "Fresh Pasta": 0.045,
+    "Mushrooms": 0.035,
+    "Salmon": 0.025,
+    "Lettuce": 0.025,
+    "Pepperoni": 0.015,
+}
+STAPLE_DELIVERY_GUARD_DAYS = 2.0
+
+
 class SupplyController:
     name = "supply"
 
@@ -50,6 +65,10 @@ class SupplyController:
                 # Seed usage from the likely widened menu, not just today's
                 # active menu, so supply stays ahead of pricing/menu changes.
                 usage = self._cold_start_usage(obs, ing, planning_dishes, params)
+            usage = max(
+                usage,
+                self._staple_usage_floor(obs, belief, ing, params),
+            )
             usage = max(1e-6, usage)
 
             have = on_hand.get(ing, 0.0) + pipeline.get(ing, 0.0)
@@ -61,6 +80,8 @@ class SupplyController:
                     eta_guard,
                     float(earliest_eta - obs.day) + params.delivery_guard_days,
                 )
+            if ing in STAPLE_USAGE_FLOOR_KG_PER_COVER:
+                eta_guard += STAPLE_DELIVERY_GUARD_DAYS
             if cover_days >= eta_guard:
                 continue
 
@@ -131,6 +152,20 @@ class SupplyController:
                 if i["ingredient"] == ing:
                     kg += i["quantity_kg"] * per_dish
         return max(0.5, kg)
+
+    def _staple_usage_floor(self, obs: Observation, belief: BeliefState,
+                            ing: str, params: Params) -> float:
+        kg_per_cover = STAPLE_USAGE_FLOOR_KG_PER_COVER.get(ing)
+        if kg_per_cover is None:
+            return 0.0
+        if belief.weekday_covers:
+            covers = sum(belief.weekday_covers.values()) / len(belief.weekday_covers)
+            covers = max(covers, params.cold_start_covers * 0.75)
+        else:
+            covers = params.cold_start_covers
+        if obs.customer_trend == "Growing":
+            covers *= 1.1
+        return kg_per_cover * covers
 
     def _earliest_eta(self, obs: Observation, ing: str) -> int | None:
         etas = []

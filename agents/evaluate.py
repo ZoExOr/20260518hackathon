@@ -56,12 +56,17 @@ def fetch_scenarios(base_url: str) -> list[str]:
         return list(FALLBACK_SCENARIOS)
 
 
-def load_strategy(module_path: str):
+def load_strategy(module_path: str, *, use_llm: bool = False):
     """Dynamically import a strategy function from a dotted module path."""
     mod = importlib.import_module(module_path)
     if not hasattr(mod, "strategy"):
         print(f"Error: {module_path} has no 'strategy' function")
         sys.exit(1)
+    if use_llm:
+        if hasattr(mod, "configure_strategy"):
+            mod.configure_strategy(use_llm=True)
+        else:
+            print(f"Warning: {module_path} does not support --llm; running default strategy.")
     return mod.strategy
 
 
@@ -236,8 +241,8 @@ def main():
     )
     parser.add_argument(
         "--url",
-        default=os.getenv("RESTBENCH_URL", "http://localhost:8001"),
-        help="Server URL (default: RESTBENCH_URL env var or http://localhost:8001)",
+        default=os.getenv("RESTBENCH_URL", "http://52.48.183.209:8001"),
+        help="Server URL (default: RESTBENCH_URL env var or http://52.48.183.209:8001)",
     )
     parser.add_argument(
         "--team-name",
@@ -255,9 +260,14 @@ def main():
         default=MAX_PARALLEL,
         help=f"Max parallel games (default: {MAX_PARALLEL})",
     )
+    parser.add_argument(
+        "--llm",
+        action="store_true",
+        help="Use the team agent's LLM regime supervisor when supported.",
+    )
     args = parser.parse_args()
 
-    strategy = load_strategy(args.agent)
+    strategy = load_strategy(args.agent, use_llm=args.llm)
 
     if args.scenarios:
         scenarios = args.scenarios.split(",")
@@ -265,13 +275,16 @@ def main():
         scenarios = fetch_scenarios(args.url)
 
     seeds = [int(s) for s in args.seeds.split(",")]
-    team_name = args.team_name or args.agent.split(".")[-1]
+    default_team_name = "italian" if args.agent == "agents.team_agent" else args.agent.split(".")[-1]
+    team_name = args.team_name or os.getenv("RESTBENCH_TEAM") or default_team_name
 
     print(f"Agent:     {args.agent}")
     print(f"Scenarios: {', '.join(scenarios)}")
     print(f"Seeds:     {', '.join(str(s) for s in seeds)}")
     print(f"Games:     {len(scenarios) * len(seeds)}")
     print(f"Server:    {args.url}")
+    if args.llm:
+        print("LLM:       enabled")
 
     data = evaluate(
         strategy,

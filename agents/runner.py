@@ -4,7 +4,7 @@ Usage:
     from agents.runner import run_game
     from agents.naive_rule import strategy
 
-    result = run_game(strategy, base_url="http://localhost:8001", team_name="naive", seed=42)
+    result = run_game(strategy, base_url="http://52.48.183.209:8001", team_name="naive", seed=42)
     print(result)
 
 A strategy is a callable: (observation: dict, day: int) -> list[dict]
@@ -23,7 +23,7 @@ import httpx
 
 Strategy = Callable[[dict, int], list[dict]]
 
-DEFAULT_URL = os.getenv("RESTBENCH_URL", "http://localhost:8001")
+DEFAULT_URL = os.getenv("RESTBENCH_URL", "http://52.48.183.209:8001")
 
 
 def run_game(

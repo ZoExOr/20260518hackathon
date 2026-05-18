@@ -162,6 +162,40 @@ def test_supply_sizes_new_orders_from_planning_shelf_life_not_stale_stock():
         "expired current stock must not cap fresh replenishment at min order"
 
 
+def test_supply_uses_staple_floor_before_slow_delivery_window():
+    obs = Observation({
+        "day": 3, "day_of_week": "Wednesday", "days_remaining": 27,
+        "cash": 17000.0, "staff_level": 5, "reputation_band": "Very Good",
+        "inventory": [
+            {"ingredient": "Flour", "total_kg": 47.0, "shelf_life_days": 10,
+             "batches": [{"quantity_kg": 47.0, "expires_in_days": 10}]}
+        ],
+        "supplier_catalog": [
+            {"name": "North Sea Millers", "lead_time_days": 2,
+             "delivery_days": ["Monday", "Wednesday", "Friday"],
+             "min_order_kg": 10.0, "ingredients": {"Flour": 1.8}}
+        ],
+        "pending_orders": [],
+        "delivery_history": [],
+        "menu_book": [
+            {"name": "Pizza Margherita", "base_price": 14.5, "is_active": True,
+             "ingredients": [{"ingredient": "Flour", "quantity_kg": 0.25}]},
+            {"name": "Pizza Pepperoni", "base_price": 16.0, "is_active": True,
+             "ingredients": [{"ingredient": "Flour", "quantity_kg": 0.25}]},
+        ],
+        "active_menu": ["Pizza Margherita", "Pizza Pepperoni"],
+        "recent_reviews": [],
+        "service_summary": {},
+    })
+    belief = BeliefState(ingredient_daily_usage={"Flour": 5.0})
+    out = SupplyController().propose(obs, belief, Params())
+    assert any(
+        p.action.tool == "place_order"
+        and p.action.args["ingredient"] == "Flour"
+        for p in out
+    ), "staple floors should trigger flour before the next slow delivery gap"
+
+
 def test_belief_supplier_update_tolerates_missing_order_day():
     obs = Observation({
         "day": 8, "day_of_week": "Monday", "days_remaining": 22,

@@ -12,14 +12,46 @@ from __future__ import annotations
 
 import argparse
 import os
+import threading
 
 from restbench.params import Params
 from restbench.replay import ReplayStore
 from restbench.runner import play_game
 from restbench.regime import HeuristicRegime, LLMRegime
+from restbench.agent import Agent
+from restbench.types import Observation
 from restbench.tuning.harness import EvalConfig, optimise
 
-TEAM = os.environ.get("RESTBENCH_TEAM", "prosus-team")
+TEAM = os.environ.get("RESTBENCH_TEAM", "italian")
+_STRATEGY_STATE = threading.local()
+_STRATEGY_USE_LLM = False
+
+
+def configure_strategy(*, use_llm: bool = False) -> None:
+    """Configure the evaluate-compatible strategy entrypoint."""
+    global _STRATEGY_USE_LLM
+    _STRATEGY_USE_LLM = use_llm
+    if hasattr(_STRATEGY_STATE, "agent"):
+        delattr(_STRATEGY_STATE, "agent")
+
+
+def _strategy_agent(day: int) -> Agent:
+    if day == 1 or not hasattr(_STRATEGY_STATE, "agent"):
+        use_llm = _STRATEGY_USE_LLM or os.getenv("RESTBENCH_USE_LLM") == "1"
+        regime = LLMRegime() if use_llm else HeuristicRegime()
+        _STRATEGY_STATE.agent = Agent(params=Params(), regime=regime)
+    return _STRATEGY_STATE.agent
+
+
+def strategy(observation: dict, day: int) -> list[dict]:
+    """Starter-kit evaluate entrypoint.
+
+    `agents.evaluate` expects a module-level strategy(observation, day)
+    function returning raw tool-call dictionaries. Use thread-local state so
+    parallel evaluations do not share belief memory across games.
+    """
+    obs = Observation({**observation, "day": observation.get("day", day)})
+    return [action.to_payload() for action in _strategy_agent(day).decide(obs)]
 
 
 def main() -> None:
