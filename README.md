@@ -1,329 +1,137 @@
-# RestBench — AI Restaurant Management Hackathon
+# RestBench Team Agent
 
-**Build an AI agent that runs an Italian restaurant for 30 days. Order ingredients, set prices, manage staff, run promotions — all through a REST API. The team with the highest score wins.**
+An AI agent that runs a 30-day Italian restaurant simulation. It places orders, sets staff, prices dishes, and runs promos — all through a REST API. Score = profit − penalties; bankruptcy = −100,000.
 
-Your restaurant starts in the red. You have 30 simulated days to turn it around. Every decision matters: order too much and food expires, order too little and customers walk out, cut staff to save money and your reputation tanks. The best agents balance dozens of competing tradeoffs — and adapt when things go wrong.
+This is an **Option A — LLM-based agent**. We use LLMs inside each specialist agent (and as a high-level strategy supervisor), wrapped in a multi-agent stack with an auto-research memory loop.
 
----
-
-## Get Started (5 minutes)
-
-### 1. Clone and install
-
-```bash
-git clone <this-repo>
-cd restbench-starter-kit
-pip install -r requirements.txt
-```
-
-### 2. Set the server URL
-
-```bash
-export RESTBENCH_URL=http://52.48.183.209:8001
-```
-
-> **Explore the API interactively:** http://52.48.183.209:8001/docs (Swagger UI)
-
-### 3. Run a baseline to see how the game works
-
-```bash
-python -m agents.naive_rule
-```
-
-This runs a simple rule-based agent that survives all 30 days but scores around -15,000. Your job: beat it.
-
-### 4. Start building your agent
-
-**Option A — LLM-based agent (recommended starting point):**
-```bash
-cp agents/llm_template.py agents/my_agent.py
-export OPENAI_API_KEY=sk-...            # or ANTHROPIC_API_KEY for Claude
-export AGENT_MODEL=openai/gpt-4.1-mini  # any litellm-supported model
-python -m agents.my_agent
-```
-
-**Option B — Rule-based agent:**
-```bash
-cp agents/starter_template.py agents/my_agent.py
-# Edit the strategy() function in agents/my_agent.py
-python -m agents.my_agent
-```
-
-**Option C — Any language:** The API is plain HTTP + JSON. Build your agent in whatever you like.
-
-### 5. Check the leaderboard
-
-```bash
-curl $RESTBENCH_URL/leaderboard
-```
+**Team name:** `liquid_italian`
 
 ---
 
-## The Challenge
+## 1. Introduction
 
-You manage a 22-table Italian restaurant. Each day, your agent receives an **observation** (cash, inventory, suppliers, weather, customer feedback, reputation) and responds with **actions** (order food, set prices, adjust staff, run promotions). After 30 days, you get a composite score.
+Each day the agent gets an observation (cash, inventory, suppliers, weather, reviews, alerts) and submits actions (orders, staff, menu, prices, marketing, happy hour, daily special).
 
-```
-total_score = net_profit - penalties
-```
+We picked **Option A (LLM-based agent)** because the game has hidden variables — real demand, price elasticity, supplier reliability, scoring weights, and hidden scenarios. Pure rules can't read alerts and reviews well; pure LLM-driven action emission is fragile. So we use LLMs **inside specialist agents** where their reasoning helps, and keep the API-touching layer narrow and structured.
 
-Penalties are assessed for low satisfaction, low reputation, walkouts, and food waste. Going bankrupt = score of **-100,000**.
+Reference docs:
 
-**Higher is better.** The baselines score -15,000 to -19,000. A well-designed agent can score positive.
-
-> **Full game specification:** [AGENT_CONTRACT.md](AGENT_CONTRACT.md)
-> **Strategy thinking:** [STRATEGY_GUIDE.md](STRATEGY_GUIDE.md)
+- [docs/product-architecture.md](docs/product-architecture.md) — product view + diagrams
+- [docs/code-structure-and-llm.md](docs/code-structure-and-llm.md) — file map + LLM call paths
+- [AGENT_CONTRACT.md](AGENT_CONTRACT.md) — full game spec
+- [STRATEGY_GUIDE.md](STRATEGY_GUIDE.md) — gameplay heuristics
 
 ---
 
-## Game Loop
+## 2. Architecture — LLM + Multi-Agent + Auto-Research
 
-All interaction happens over HTTP:
+![Architecture](docs/restbench_multi_agent_uml_vertical.png)
+
+`CoreAgent` ([restbench/agent.py](restbench/agent.py)) orchestrates the daily cycle: read observation → run each specialist → produce final tool calls. The decision layer has five specialists, each focused on one job. Each one uses the LLM differently depending on what its job needs.
+
+### `RegimeSupervisor` ([restbench/regime.py](restbench/regime.py))
+
+**Job.** Pick today's high-level operating mode and a handful of parameter overrides.
+
+**How LLM fits in.** This is where the LLM does most of its work. We hand it a short summary of today's situation (cash, inventory pressure, walkouts, alerts, days left) and ask one question: *what mode are we in today?* The LLM answers with a small JSON: a mode name plus a few numeric knobs. That's it — no tool calls, no free-form text. Modes: `normal | supply_defensive | demand_surge | demand_slump | endgame`.
+
+### `SupplyAgent` ([restbench/controllers/supply.py](restbench/controllers/supply.py))
+
+**Job.** Decide what to order, from whom, how much, when — avoiding stockouts and waste.
+
+**How LLM fits in.** Calendar math (lead times, delivery days, shelf life) stays in code — LLMs get this wrong. Instead, the LLM tells SupplyAgent *how cautious to be*: how many days of stock to hold, and how much to distrust shaky suppliers. If an alert says "supplier X halted," the LLM turns up the caution dial, and SupplyAgent does the rest.
+
+### `OperationsAgent` ([restbench/controllers/operations.py](restbench/controllers/operations.py))
+
+**Job.** Set staffing to balance walkouts against labor cost.
+
+**How LLM fits in.** Code forecasts tomorrow's covers from day-of-week, weather, and reputation, then converts that into a staff number. The LLM only sets the posture through `mode`: `demand_surge` says "staff up for safety", `demand_slump`/`endgame` says "cut headcount". LLM picks the posture, code picks the number.
+
+### `PricingAgent` ([restbench/controllers/pricing.py](restbench/controllers/pricing.py))
+
+**Job.** Pick the active menu, dish prices, marketing spend, happy hour, and daily special.
+
+**How LLM fits in.** Menu rules (≥5 dishes, only dishes we can actually cook) are enforced by code, so the LLM can't accidentally publish a menu that stocks out. The LLM nudges two dials: a price multiplier (raise or lower across the board) and a marketing switch (spend or save). Pricing posture comes from the LLM; menu safety comes from code.
+
+### `BeliefEstimator` ([restbench/belief.py](restbench/belief.py)) — the auto-research agent
+
+**Job.** Build memory across days: per-ingredient usage rates, supplier reliability, capacity-reduction memory, reputation trend, demand signals.
+
+**How auto-research fits in.** This agent is the heart of the **auto-research loop**. "Auto-research" doesn't mean reading papers — it means **the system researches the simulator itself**. The game hides demand functions, price elasticity, supplier reliability, and scoring weights, and the final eval includes hidden scenarios we've never seen. So every day BeliefEstimator runs the research cycle:
+
+1. **Collect evidence** — yesterday's `DayResult` (covers, walkouts, stockouts, delivery outcomes, reviews)
+2. **Update hypotheses** — refine usage estimates, supplier reliability scores, demand trend
+3. **Feed back into strategy** — belief state becomes input for `RegimeSupervisor`'s next LLM call
+
+The LLM in `RegimeSupervisor` is reading BeliefEstimator's output as its main signal. So the loop is: evidence → updated beliefs → LLM picks mode → controllers act → new evidence. That's the same loop a researcher runs on an unknown system, but at one-day cadence inside the simulator.
+
+---
+
+## 3. Code Structure
 
 ```
-POST /games                       -> create game, get first observation
-loop 30 days:
-    GET  /games/{id}/observe      -> read current state (optional)
-    POST /games/{id}/action       -> submit one action (repeat as needed)
-    POST /games/{id}/end-turn     -> advance the day, get results
-GET  /games/{id}/score            -> final score
+agents/                  # entry points + evaluation
+  team_agent.py          # main agent: main() + strategy() + configure_strategy(use_llm=...)
+  evaluate.py            # multi-scenario × multi-seed runner
+  runner.py              # HTTP game-lifecycle driver
+  llm_template.py        # "LLM emits tool calls" reference (NOT the team agent)
+  starter_template.py    # rule-based starter
+  naive_rule.py / do_nothing.py / compare.py   # baselines
+
+restbench/               # decision core
+  agent.py               # daily pipeline
+  belief.py              # auto-research memory
+  regime.py              # RegimeSupervisor + LLMRegime (LLM call)
+  composer.py            # merge / dedupe / order proposals
+  safety.py              # final deterministic guard
+  params.py              # tunable parameters
+  replay.py              # replay-file writer
+  llm_silence.py         # suppress noisy LiteLLM logs
+  controllers/
+    supply.py
+    operations.py
+    pricing.py
+
+dashboard/               # local replay UI
+  index.html             # trend charts
+  research-readme.html   # team explanation page
+dashboard_server.py
+
+docs/
+  product-architecture.md
+  code-structure-and-llm.md
+  restbench_multi_agent_uml_vertical.png
+
+replays/                 # JSONL replays
+tests/
 ```
 
-### Create a game
+### Running it
 
-```bash
-curl -X POST $RESTBENCH_URL/games \
-  -H 'Content-Type: application/json' \
-  -d '{"team_name": "my_team", "scenario": "baseline", "seed": 42}'
-```
+```powershell
+python -m agents.team_agent
 
-Returns `{game_id, day, status, observation}`. Save the `game_id`.
-
-### Submit actions (one at a time, as many as you want per turn)
-
-```bash
-curl -X POST $RESTBENCH_URL/games/{game_id}/action \
-  -H 'Content-Type: application/json' \
-  -d '{"tool": "place_order", "args": {"supplier": "Fresh Farms NL", "ingredient": "Chicken", "quantity_kg": 8}}'
-```
-
-Returns `{"status": "accepted"}` or `{"status": "rejected", "reason": "..."}`.
-
-### End the turn
-
-```bash
-curl -X POST $RESTBENCH_URL/games/{game_id}/end-turn
-```
-
-Advances the simulation by one day. Returns the new observation plus yesterday's service results.
-
-### Get your score (after day 30 or bankruptcy)
-
-```bash
-curl $RESTBENCH_URL/games/{game_id}/score
+# dashboard
+python dashboard_server.py
+# → http://127.0.0.1:8765
 ```
 
 ---
 
-## Available Actions
+## 4. Debug Dashboard
 
-| Action | What it does |
-|--------|-------------|
-| **place_order** | Order ingredients from a supplier. Delivery takes 1-2 days and only on that supplier's delivery days. |
-| **set_staff_level** | Adjust staff between 3 and 15. Each costs 120 EUR/day. More staff = faster kitchen, fewer walkouts. |
-| **set_menu** | Change active dishes (min 5). New dishes have a kitchen learning curve. Narrow menus reduce demand. |
-| **set_price** | Adjust a dish's price between 0.8x and 1.2x its base price. |
-| **set_marketing_spend** | Spend 0-500 EUR/day on marketing. Diminishing returns. |
-| **run_happy_hour** | Boosts demand, discounts prices, small satisfaction bonus. Diminishing returns on consecutive use. |
-| **offer_daily_special** | Pick one menu dish as today's special for a satisfaction bonus. |
-| **save_notes** | Save up to 4,000 chars that persist between turns. Read via `GET /games/{id}/notes`. |
+Debugging an agent across 30 days × multiple scenarios × multiple seeds is painful in raw logs. So we built a local **Trend Dashboard** ([dashboard_server.py](dashboard_server.py) + [dashboard/index.html](dashboard/index.html)) that reads any `replays/run_*.jsonl` file and renders the run as charts and a per-day table. Auto-refreshes every 3 seconds, so you can watch a live game as it runs.
 
-<details>
-<summary>Action examples (JSON)</summary>
+![Dashboard](docs/RestBench%20Dashboard-1.png)
 
-```json
-{"tool": "place_order", "args": {"supplier": "Fresh Farms NL", "ingredient": "Chicken", "quantity_kg": 8}}
-{"tool": "set_staff_level", "args": {"level": 6}}
-{"tool": "set_menu", "args": {"dishes": ["Pizza Margherita", "Chicken Parmesan", "Grilled Salmon", "Mushroom Risotto", "Spaghetti Carbonara"]}}
-{"tool": "set_price", "args": {"dish": "Grilled Salmon", "price": 22.0}}
-{"tool": "set_marketing_spend", "args": {"amount": 200}}
-{"tool": "run_happy_hour", "args": {}}
-{"tool": "offer_daily_special", "args": {"dish": "Mushroom Risotto"}}
-{"tool": "save_notes", "args": {"text": "Day 3: ordered salmon, low on cream"}}
+What it shows:
+
+- **Header strip** — scenario / seed, final score with score breakdown (profit, walkouts, reputation, waste), last cash, reputation/walkout band, coverage risk (zero-inventory + expiring counts), ops snapshot (staff, menu size, pending kg, current mode)
+- **Trend charts** — cash, covers vs revenue, wait/walkout pressure, inventory risk, cost stack, staff/menu/pending qty, alerts/stockouts/substitutions, weather/reviews/utilization
+- **Per-day snapshot table** — one row per day with cash, covers, revenue, costs, staff, menu count, walkout band, pending kg, zero-inv count, expiring-soon count, **regime mode**, action breakdown, and any alerts/stockouts
+
+```powershell
+# dashboard
+python dashboard_server.py
+# → http://127.0.0.1:8765
 ```
-
-</details>
-
----
-
-## What Your Agent Can See
-
-The observation is returned when you create a game, call `/observe`, or call `/end-turn`.
-
-| Field | What it tells you |
-|-------|-------------------|
-| `day`, `day_of_week`, `days_remaining` | Where you are in the 30-day game |
-| `cash` | Current balance (EUR) |
-| `yesterday_revenue`, `yesterday_total_costs` | Yesterday's P&L |
-| `cost_breakdown` | Staff, fixed, marketing, waste costs |
-| `inventory` | Per-ingredient: total kg, batches with expiry dates, shelf life |
-| `service_summary` | Yesterday's covers, revenue, walkouts, dishes sold, wait times, stockouts |
-| `supplier_catalog` | All suppliers: prices, lead times, delivery days, min orders |
-| `pending_orders` | Orders in transit with expected delivery day |
-| `delivery_history` | Last 14 days: ordered vs delivered, on-time status |
-| `menu_book` | All recipes: ingredients, base price, current price, active status |
-| `active_menu` | Currently served dishes |
-| `staff_level` | Current staff count |
-| `reputation_band` | "Poor" / "Fair" / "Good" / "Very Good" / "Excellent" |
-| `recent_reviews` | Reviews from last 14 days: stars, visit day |
-| `customer_trend` | "Declining" / "Stable" / "Growing" |
-| `weather_today`, `weather_forecast` | Today's weather + 3-day forecast (accuracy degrades) |
-| `alerts` | Scenario events (supplier issues, demand changes, etc.) |
-| `notes` | Your saved notes |
-
-### The most important field: `dishes_unavailable_at`
-
-Inside `service_summary`, this tells you exactly which dish ran out and when. If Grilled Salmon ran out at hour 14, you lost 8 hours of salmon sales. This is the #1 signal for inventory management.
-
-### What you DON'T see
-
-- Exact satisfaction scores (only reputation band)
-- Exact walkout counts (only band: "None" / "Few" / "Some" / "Many")
-- Supplier reliability ratings
-- Customer cohort sizes
-- Other teams' games
-
----
-
-## Game Mechanics
-
-### Economics
-- **Starting cash:** 15,000 EUR
-- **Daily fixed cost:** 300 EUR (rent, utilities)
-- **Staff cost:** 120 EUR/person/day (default 8 staff = 960/day)
-- **Total daily overhead at 8 staff:** 1,260 EUR
-
-### Supply Chain
-- 5-7 suppliers with different ingredients, prices, and delivery schedules
-- Lead time: 1-2 days, then delivery only on supplier's specific days
-- **Example:** Order from a Wed-only supplier on Thursday with 1-day lead = delivers next Wednesday (6 days!)
-- Ingredients are perishable (3-14 day shelf life)
-- Suppliers can have disruptions — deliveries may fail during outages
-- Oldest batches are consumed first (FIFO)
-
-### Demand
-- Varies by hour (lunch and dinner peaks), day of week (weekends busier), weather, reputation, marketing, menu variety, and pricing
-
-### Tables
-- 22 tables of various sizes (2, 4, 6, 8 seats)
-- Customers get the smallest table that fits; if none available, they wait briefly then leave
-
-### Reputation
-- Starts at "Very Good", updated daily as a moving average
-- Negative experiences have outsized impact
-- **Reputation spirals are real** — a bad week can take many days to recover
-
----
-
-## Scenarios
-
-Test your agent against different conditions. The final evaluation includes **hidden scenarios** your agent hasn't seen — it must adapt based on observations and alerts.
-
-| Scenario | What happens |
-|----------|-------------|
-| `baseline` | Standard 30-day game, no events |
-| `supply_crisis` | A major supplier goes into outage mid-game |
-| `tourist_season` | Large demand swings: surge then drop |
-| `renovation` | Reduced table capacity for first 12 days |
-
-Additional hidden scenarios will be used for final evaluation. Your agent must adapt to unseen conditions based on observations and alerts.
-
-### Recommended seeds
-
-Use these seeds during development for reproducible, comparable results:
-
-| Seed | Purpose |
-|------|---------|
-| `42` | Primary development seed |
-| `88` | Alternate seed for variety |
-| `123` | Stress-test seed |
-
-```bash
-# Play a specific scenario
-curl -X POST $RESTBENCH_URL/games \
-  -H 'Content-Type: application/json' \
-  -d '{"team_name": "my_team", "scenario": "supply_crisis", "seed": 42}'
-
-# List all scenarios
-curl $RESTBENCH_URL/scenarios
-```
-
-**Read the alerts.** When scenario events fire, they come with alert messages in `observation.alerts`.
-
----
-
-## Tips for Winning
-
-1. **Don't run out of ingredients.** A single stockout day costs revenue + reputation damage that compounds for days.
-2. **Watch delivery schedules.** A Wed-only supplier with 1-day lead means orders placed Thursday arrive next Wednesday.
-3. **Check `dishes_unavailable_at` every turn.** It's the clearest signal for what to reorder.
-4. **Don't double-order.** Check `pending_orders` before placing new ones.
-5. **Reputation is sticky.** It takes many good days to recover from one bad one. Avoid bad days rather than chasing great ones.
-6. **Read the alerts.** "Supplier X halted operations" means find an alternative fast.
-7. **Use `save_notes`.** Track orders, stockouts, and patterns. Your agent has no memory between turns otherwise.
-8. **Same seed + same scenario + same actions = same result.** Use determinism to debug and iterate.
-9. **Start simple.** A boring "keep everything stocked" strategy beats a clever one that occasionally runs out of food.
-10. **Test across scenarios.** An agent that aces `baseline` but crashes on `supply_crisis` will lose on the hidden scenarios.
-
----
-
-## Baselines
-
-Run these to understand the scoring range and validate your setup:
-
-```bash
-python -m agents.do_nothing        # Bankrupt by day ~16, score: -100,000
-python -m agents.naive_rule         # Survives 30 days, score: ~-15,000
-python -m agents.starter_template   # Rule-based starting point
-python -m agents.llm_template       # LLM starting point (needs API key)
-python -m agents.compare            # Run all baselines side by side
-```
-
-### Evaluate across scenarios and seeds
-
-```bash
-python -m agents.evaluate agents.my_agent                          # all scenarios, seeds 42/88/123
-python -m agents.evaluate agents.my_agent --scenarios baseline,supply_crisis
-python -m agents.evaluate agents.my_agent --seeds 42,88
-python -m agents.evaluate agents.my_agent --parallel 5             # control concurrency (default: 10)
-python -m agents.evaluate agents.my_agent --quiet                  # summary table only
-```
-
-Runs your agent against every (scenario, seed) combination in parallel and prints a summary report.
-
----
-
-## API Reference
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/games` | Create a game. Body: `{team_name, scenario?, seed?}` |
-| `GET` | `/games/{id}/observe` | Get current observation |
-| `POST` | `/games/{id}/action` | Submit one action. Body: `{tool, args}` |
-| `POST` | `/games/{id}/end-turn` | Advance to next day |
-| `GET` | `/games/{id}/score` | Final score (after game ends) |
-| `GET` | `/games/{id}/status` | Quick status: `{game_id, day, cash, status}` |
-| `GET` | `/games/{id}/notes` | Read saved notes |
-| `GET` | `/leaderboard` | Ranked scores. Filter: `?scenario=baseline` |
-| `GET` | `/scenarios` | List available scenarios |
-| `GET` | `/games` | List games. Filter: `?team_name=my_team` |
-| `DELETE` | `/games/{id}` | Abandon a game |
-| `GET` | `/health` | Server health check |
-
-### Rate Limits
-
-Per team: max **10 concurrent games** and **60 games per hour**. Exceeding either returns `429 Too Many Requests`. The evaluate harness handles parallelism automatically.
-
----
-
-Good luck. Go feed some customers.
