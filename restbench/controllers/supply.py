@@ -18,8 +18,8 @@ The SafetyGate has the final say on whether we can afford the order.
 """
 from __future__ import annotations
 
-from .base import (Controller, earliest_delivery_day, supplier_for,
-                   structural_stockout, usable_inventory_kg)
+from .base import (Controller, earliest_delivery_day, planning_shelf_life_days,
+                   supplier_for, structural_stockout, usable_inventory_kg)
 from ..types import Observation, BeliefState, ProposedAction, Action
 from ..params import Params
 
@@ -34,7 +34,7 @@ class SupplyController:
         emergency = structural_stockout(obs)
         on_hand = {i["ingredient"]: usable_inventory_kg(i)
                    for i in obs.inventory}
-        shelf = {i["ingredient"]: float(i.get("shelf_life_days", 14))
+        shelf = {i["ingredient"]: planning_shelf_life_days(i)
                  for i in obs.inventory}
         pipeline: dict[str, float] = {}
         for po in obs.pending_orders:

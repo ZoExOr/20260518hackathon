@@ -127,6 +127,41 @@ def test_supply_reorders_when_next_delivery_is_after_runout():
         "supply must reorder before stockout when delivery cadence is slow"
 
 
+def test_supply_sizes_new_orders_from_planning_shelf_life_not_stale_stock():
+    obs = Observation({
+        "day": 4, "day_of_week": "Thursday", "days_remaining": 26,
+        "cash": 15000.0, "staff_level": 8, "reputation_band": "Very Good",
+        "inventory": [
+            {"ingredient": "Chicken", "total_kg": 0.0, "shelf_life_days": -1,
+             "batches": [{"quantity_kg": 0.0, "expires_in_days": -1}]}
+        ],
+        "supplier_catalog": [
+            {"name": "Fresh Farms NL", "lead_time_days": 1,
+             "delivery_days": ["Friday"], "min_order_kg": 5.0,
+             "ingredients": {"Chicken": 8.0}}
+        ],
+        "pending_orders": [],
+        "delivery_history": [],
+        "menu_book": [
+            {"name": "Chicken Plate", "base_price": 18.0, "is_active": True,
+             "ingredients": [{"ingredient": "Chicken", "quantity_kg": 0.2}]},
+        ],
+        "active_menu": ["Chicken Plate"],
+        "recent_reviews": [],
+        "service_summary": {},
+    })
+    belief = BeliefState(ingredient_daily_usage={"Chicken": 4.0})
+    out = SupplyController().propose(obs, belief, Params())
+    chicken_orders = [
+        p.action.args["quantity_kg"]
+        for p in out
+        if p.action.tool == "place_order"
+        and p.action.args["ingredient"] == "Chicken"
+    ]
+    assert chicken_orders and chicken_orders[0] > 5.0, \
+        "expired current stock must not cap fresh replenishment at min order"
+
+
 def test_belief_supplier_update_tolerates_missing_order_day():
     obs = Observation({
         "day": 8, "day_of_week": "Monday", "days_remaining": 22,

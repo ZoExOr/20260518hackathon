@@ -13,6 +13,20 @@ from ..types import Observation, BeliefState, ProposedAction, weekday_of_day
 from ..params import Params
 
 
+PLANNING_SHELF_LIFE_DAYS = {
+    "Chicken": 5.0,
+    "Cream": 5.0,
+    "Flour": 14.0,
+    "Fresh Pasta": 4.0,
+    "Lettuce": 4.0,
+    "Mozzarella": 5.0,
+    "Mushrooms": 4.0,
+    "Pepperoni": 10.0,
+    "Salmon": 3.0,
+    "Tomato Sauce": 7.0,
+}
+
+
 class Controller(Protocol):
     name: str
 
@@ -75,6 +89,22 @@ def usable_inventory_kg(inv: dict, *, next_n_days: int = 1,
         else:
             usable += qty
     return usable
+
+
+def planning_shelf_life_days(inv: dict) -> float:
+    """Shelf life to use for fresh purchase sizing, not current batch age.
+
+    The API's `shelf_life_days` field behaves like remaining life of current
+    stock in observations. If that value is reused as the cap for new orders,
+    a stale or expired batch can permanently force future orders down to the
+    supplier minimum and keep the restaurant in a stockout loop.
+    """
+    ingredient = inv.get("ingredient", "")
+    known = PLANNING_SHELF_LIFE_DAYS.get(ingredient)
+    if known is not None:
+        return known
+    observed = float(inv.get("shelf_life_days", 14) or 14)
+    return max(1.0, observed)
 
 
 def structural_stockout(obs: Observation, *, threshold: float = 0.6) -> bool:
