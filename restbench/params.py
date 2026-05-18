@@ -26,6 +26,9 @@ class Params:
     safety_days: float = 2.0              # extra buffer added to S
     reliability_inflation: float = 1.0     # extra stock per unit (1/reliability-1)
     waste_aversion: float = 1.0            # >1 shrinks orders near shelf-life limits
+    delivery_guard_days: float = 1.0       # reorder earlier when next feasible delivery is far away
+    bootstrap_full_menu_days: int = 4      # early uncertainty: provision for the likely widened menu
+    cold_start_covers: float = 120.0       # conservative prior covers before belief warms up
 
     # --- Operations / staffing --------------------------------------------
     covers_per_staff: float = 16.0         # heuristic kitchen throughput per staff

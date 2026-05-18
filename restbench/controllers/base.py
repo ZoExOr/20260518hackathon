@@ -49,3 +49,54 @@ def supplier_for(obs: Observation, ingredient: str
         if ingredient in ings:
             out.append({**s, "_price": ings[ingredient]})
     return out
+
+
+def usable_inventory_kg(inv: dict, *, next_n_days: int = 1,
+                        last_day_weight: float = 0.35) -> float:
+    """Inventory that is realistically usable within the next service window.
+
+    The raw `total_kg` can be misleading because batches expiring today are
+    often effectively gone before the next turn's service. We therefore:
+    - drop already-expired / same-day-expiring stock
+    - heavily discount stock expiring tomorrow
+    """
+    batches = inv.get("batches", []) or []
+    if not batches:
+        return float(inv.get("total_kg", 0) or 0)
+
+    usable = 0.0
+    for batch in batches:
+        qty = float(batch.get("quantity_kg", 0) or 0)
+        exp = int(batch.get("expires_in_days", 0) or 0)
+        if exp <= 0:
+            continue
+        if exp <= next_n_days:
+            usable += qty * last_day_weight
+        else:
+            usable += qty
+    return usable
+
+
+def structural_stockout(obs: Observation, *, threshold: float = 0.6) -> bool:
+    """True when the menu is effectively unserviceable from next turn's stock.
+
+    We flag an emergency when most ingredients required by the active menu have
+    no realistically usable stock left.
+    """
+    needed: set[str] = set()
+    for dish in obs.active_menu:
+        rec = obs.recipe(dish)
+        if not rec:
+            continue
+        for ing in rec.get("ingredients", []):
+            needed.add(ing["ingredient"])
+
+    if not needed:
+        return False
+
+    usable = {
+        inv["ingredient"]: usable_inventory_kg(inv)
+        for inv in obs.inventory
+    }
+    missing = sum(1 for ing in needed if usable.get(ing, 0.0) <= 0.05)
+    return (missing / len(needed)) >= threshold

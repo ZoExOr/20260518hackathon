@@ -28,6 +28,13 @@ class HeuristicRegime:
 
     def decide(self, obs: Observation, belief: BeliefState,
                params: Params) -> tuple[Mode, dict]:
+        if belief.memory.get("capacity_reduced_until", 0) >= obs.day:
+            return Mode.DEMAND_SLUMP, {
+                "target_days": max(4.5, params.target_days - 2.5),
+                "safety_days": max(1.0, params.safety_days - 0.5),
+                "marketing_slump": 0.0,
+            }
+
         if obs.days_remaining <= params.endgame_window:
             # Protect FINAL reputation: stop chasing risky margin.
             return Mode.ENDGAME, {"base_price_mult": min(

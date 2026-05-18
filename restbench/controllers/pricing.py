@@ -16,7 +16,7 @@ a lower-priority "drop dish" proposal. See composer.py.
 """
 from __future__ import annotations
 
-from .base import Controller
+from .base import Controller, structural_stockout, usable_inventory_kg
 from ..types import Observation, BeliefState, ProposedAction, Action
 from ..params import Params
 
@@ -27,15 +27,28 @@ class PricingController:
     def propose(self, obs: Observation, belief: BeliefState,
                 params: Params) -> list[ProposedAction]:
         out: list[ProposedAction] = []
+        emergency = structural_stockout(obs)
 
-        # 1) Menu: keep all dishes whose ingredients we could plausibly stock.
-        #    (Variety matters; never silently shrink below 5.)
+        # 1) Menu: prefer the widest *currently serviceable* menu.
         all_dishes = [m["name"] for m in obs.menu_book]
+        usable = {inv["ingredient"]: usable_inventory_kg(inv) for inv in obs.inventory}
+        safe = []
+        for dish in all_dishes:
+            rec = obs.recipe(dish)
+            if not rec:
+                continue
+            if all(usable.get(i["ingredient"], 0.0) >= i["quantity_kg"]
+                   for i in rec.get("ingredients", [])):
+                safe.append(dish)
         desired = all_dishes if len(all_dishes) >= 5 else obs.active_menu
+        if emergency and len(safe) >= 5:
+            desired = safe
         if set(desired) != set(obs.active_menu) and len(desired) >= 5:
             out.append(ProposedAction(
                 Action("set_menu", {"dishes": desired}),
-                priority=20, rationale="maximise variety"))
+                priority=20,
+                rationale="structural stockout -> widest safe menu"
+                if emergency else "maximise variety"))
 
         # 2) Prices: apply the global multiplier within the 0.8-1.2 band.
         mult = params.base_price_mult
@@ -54,20 +67,22 @@ class PricingController:
         # 3) Marketing / happy hour / special — reactive to weak demand.
         trend = obs.customer_trend
         weak = trend == "Declining" or belief.reputation_trajectory == "Falling"
-        spend = params.marketing_slump if weak else params.marketing_default
+        spend = 0.0 if emergency else (
+            params.marketing_slump if weak else params.marketing_default
+        )
         spend = max(0.0, min(500.0, spend))
         out.append(ProposedAction(
             Action("set_marketing_spend", {"amount": spend}),
-            priority=10, rationale=f"trend={trend}"))
+            priority=10, rationale=f"trend={trend}, emergency={emergency}"))
 
-        if weak and params.happy_hour_on_weak_days:
+        if weak and params.happy_hour_on_weak_days and not emergency:
             out.append(ProposedAction(
                 Action("run_happy_hour", {}), priority=10,
                 rationale="weak demand -> happy hour"))
 
         # Daily special: cheap satisfaction bonus; rotate a popular dish.
         sold = obs.service_summary.get("dishes_sold", {}) or {}
-        if obs.active_menu:
+        if obs.active_menu and not emergency:
             pick = max(obs.active_menu,
                        key=lambda d: sold.get(d, 0)) if sold else obs.active_menu[0]
             out.append(ProposedAction(

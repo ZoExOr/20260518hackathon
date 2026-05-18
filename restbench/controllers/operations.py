@@ -14,7 +14,7 @@ the relationship is explicitly non-linear (STRATEGY_GUIDE).
 """
 from __future__ import annotations
 
-from .base import Controller
+from .base import Controller, structural_stockout
 from ..types import (Observation, BeliefState, ProposedAction, Action,
                       weekday_of_day)
 from ..params import Params
@@ -32,13 +32,26 @@ class OperationsController:
 
     def propose(self, obs: Observation, belief: BeliefState,
                 params: Params) -> list[ProposedAction]:
+        emergency = structural_stockout(obs)
         if self.forecaster is not None:
             covers = self.forecaster(obs, 1)
         else:
             covers = belief.weekday_covers.get(
                 weekday_of_day(obs.day + 1), 90.0)
 
+        if emergency:
+            lvl = max(5, params.staff_min)
+            if lvl == obs.staff_level:
+                return []
+            return [ProposedAction(
+                Action("set_staff_level", {"level": lvl}),
+                priority=80,
+                rationale="structural stockout -> preserve cash while restocking"
+            )]
+
         level = covers / max(1.0, params.covers_per_staff)
+        if belief.memory.get("capacity_reduced_until", 0) >= obs.day + 1:
+            level -= 1.5
         if weekday_of_day(obs.day + 1) in _WEEKEND:
             level += params.weekend_staff_bonus
 

@@ -28,11 +28,13 @@ FIXED_DAILY_COST = 300.0
 class SafetyGate:
     def filter(self, proposals: list[ProposedAction], obs: Observation,
                belief: BeliefState, params: Params) -> list[Action]:
-        acts = [self._clamp(p.action, obs) for p in proposals]
-        acts = [a for a in acts if a is not None]
+        acts: list[ProposedAction] = []
+        for p in proposals:
+            clamped = self._clamp(p.action, obs)
+            if clamped is not None:
+                acts.append(ProposedAction(clamped, p.priority, p.rationale))
         acts = self._dedupe_orders(acts, obs)
-        acts = self._enforce_cash(acts, obs, params)
-        return acts
+        return self._enforce_cash(acts, obs, params)
 
     # --- 1. clamp to legal ranges -----------------------------------------
     def _clamp(self, a: Action, obs: Observation) -> Action | None:
@@ -65,13 +67,13 @@ class SafetyGate:
         return Action(t, args)
 
     # --- 2. de-duplicate orders -------------------------------------------
-    def _dedupe_orders(self, acts: list[Action], obs: Observation
-                       ) -> list[Action]:
+    def _dedupe_orders(self, acts: list[ProposedAction], obs: Observation
+                       ) -> list[ProposedAction]:
         pending = {(p["supplier"], p["ingredient"]) for p in obs.pending_orders}
         out, seen = [], set()
         for a in acts:
-            if a.tool == "place_order":
-                key = (a.args["supplier"], a.args["ingredient"])
+            if a.action.tool == "place_order":
+                key = (a.action.args["supplier"], a.action.args["ingredient"])
                 if key in pending or key in seen:
                     continue
                 seen.add(key)
@@ -87,30 +89,30 @@ class SafetyGate:
                     return price * a.args["quantity_kg"]
         return 0.0
 
-    def _enforce_cash(self, acts: list[Action], obs: Observation,
+    def _enforce_cash(self, acts: list[ProposedAction], obs: Observation,
                       params: Params) -> list[Action]:
         cash = obs.cash
-        staff = next((a.args["level"] for a in acts
-                      if a.tool == "set_staff_level"), obs.staff_level)
-        marketing = next((a.args["amount"] for a in acts
-                          if a.tool == "set_marketing_spend"), 0.0)
+        staff = next((a.action.args["level"] for a in acts
+                      if a.action.tool == "set_staff_level"), obs.staff_level)
+        marketing = next((a.action.args["amount"] for a in acts
+                          if a.action.tool == "set_marketing_spend"), 0.0)
         # Conservative projected end-of-turn outflow that is NOT order spend.
         overhead = FIXED_DAILY_COST + staff * 120.0 + marketing
 
-        orders = [a for a in acts if a.tool == "place_order"]
-        others = [a for a in acts if a.tool != "place_order"]
+        orders = [a for a in acts if a.action.tool == "place_order"]
+        others = [a.action for a in acts if a.action.tool != "place_order"]
         # cheapest-value first so we keep the orders we most need? No —
         # drop the LEAST urgent (largest, most expensive) first. Supply set
         # priority high; here we just bound total spend.
-        orders.sort(key=lambda a: self._order_cost(a, obs))  # cheap first
+        orders.sort(key=lambda a: (-a.priority, self._order_cost(a.action, obs)))
 
         budget = min(cash - params.cash_reserve_floor - overhead,
                      params.max_order_cash_frac * cash)
         kept, spent = [], 0.0
         for a in orders:
-            c = self._order_cost(a, obs)
+            c = self._order_cost(a.action, obs)
             if spent + c <= budget:
-                kept.append(a)
+                kept.append(a.action)
                 spent += c
             # else: skip this order this turn (supply will retry next day)
         return others + kept

@@ -38,10 +38,20 @@ class BeliefEstimator:
         """Fold one observation into the carried belief and return it."""
         b = self.belief
         b.day = obs.day
+        self._update_memory_flags(obs, b)
         self._update_demand(obs, b)
         self._update_suppliers(obs, b)
         self._update_reputation(obs, b)
         return b
+
+    def _update_memory_flags(self, obs: Observation, b: BeliefState) -> None:
+        alerts = " ".join(obs.alerts).lower()
+        if "renovation" in alerts or "tables are unavailable" in alerts:
+            # README says reduced capacity for the first ~12 days.
+            b.memory["capacity_reduced_until"] = max(
+                int(b.memory.get("capacity_reduced_until", 0)),
+                obs.day + 11,
+            )
 
     # --- demand ------------------------------------------------------------
     def _uncensor_covers(self, obs: Observation) -> float:
@@ -123,12 +133,25 @@ class BeliefEstimator:
         # Only fold each delivery record once (track by a stable key).
         seen: set = b.memory.setdefault("_seen_deliveries", set())
         for d in obs.delivery_history:
-            key = (d["supplier"], d["ingredient"], d["order_day"],
-                   d["delivery_day"])
+            supplier = d.get("supplier", "")
+            ingredient = d.get("ingredient", "")
+            # The live API payload is not perfectly stable; some records may
+            # omit order_day or delivery_day. Deduplicate using the most stable
+            # available fields rather than crashing the whole run.
+            key = (
+                supplier,
+                ingredient,
+                d.get("order_day"),
+                d.get("delivery_day"),
+                d.get("ordered_kg"),
+                d.get("delivered_kg"),
+            )
             if key in seen:
                 continue
             seen.add(key)
-            sb = b.supplier(d["supplier"])
+            if not supplier:
+                continue
+            sb = b.supplier(supplier)
             ordered = max(1e-6, float(d.get("ordered_kg", 0)))
             fill = float(d.get("delivered_kg", 0)) / ordered
             sb.alpha += max(0.0, min(1.0, fill))
