@@ -5,7 +5,9 @@ An AI agent that runs a 30-day Italian restaurant simulation. It places orders, 
 This is an **Option A — LLM-based agent**. We use LLMs inside each specialist agent (and as a high-level strategy supervisor), wrapped in a multi-agent stack with an auto-research memory loop.
 
 **Team name:** `liquid_italian`
-**Page:** [zoexor.github.io/20260518hackathon-page](https://zoexor.github.io/20260518hackathon-page)
+
+
+**Page:** [link to project page](https://zoexor.github.io/20260518hackathon-page)
 ---
 
 ## 1. Introduction
